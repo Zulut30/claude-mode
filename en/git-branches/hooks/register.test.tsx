@@ -19,7 +19,7 @@ const HEADS = [
   `main\torigin/main\tahead 2\ta1b2c3d\t${T - 3 * HOUR}\tIvan\tfix: header`,
   `feature/login\torigin/feature/login\tbehind 5\tb2c3d4e\t${T - 48 * HOUR}\tAnna\tfeat: login`,
   `old\torigin/old\tgone\tc3d4e5f\t${T - 900 * 24 * HOUR}\tIvan\told stuff`,
-  `wip\t\t\td4e5f6a\t${T - 600}\tIvan\twip`,
+  `wip\t\t\td4e5f6a\t${T - 600}\tIvan\twork in progress`,
 ].join('\n')
 
 const REMOTES = [
@@ -57,7 +57,7 @@ const PANE = {
   props: { title: 'Branches', isFocused: false, bodyColumns: 72, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} },
 } as const
 
-describe('output parsing', () => {
+describe('parsing output', () => {
   test('branches, remotes, status, GitHub URL', () => {
     const branches = parseBranches(HEADS, 'main')
     expect(branches[0]).toMatchObject({ name: 'main', ahead: 2, behind: 0, isCurrent: true, subject: 'fix: header' })
@@ -84,7 +84,7 @@ describe('output parsing', () => {
 
   test('relative time', () => {
     expect(relativeTime(T - 30, NOW)).toBe('just now')
-    expect(relativeTime(T - 5 * 60, NOW)).toBe('5m ago')
+    expect(relativeTime(T - 5 * 60, NOW)).toBe('5 min ago')
     expect(relativeTime(T - 3 * HOUR, NOW)).toBe('3h ago')
     expect(relativeTime(T - 48 * HOUR, NOW)).toBe('2d ago')
     expect(relativeTime(T - 900 * 24 * HOUR, NOW)).toBe('2y ago')
@@ -116,22 +116,51 @@ test('pane: branches, PRs, changes, remotes and commits', async ($, on) => {
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'git-branches', surface, ...PANE })
-    expect(await ui.find({ type: 'Text', text: 'acme/site' })).toBeDefined()
-    expect(await ui.find({ type: 'Link', text: 'open on GitHub' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: '↑2 to push' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: '✎ 1 modified · 1 staged · 1 untracked' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: '#12' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: 'not on remote' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: 'local only' })).toBeDefined()
-    expect(await ui.find({ type: 'Link', text: 'Login page' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /checks passed · approved/ })).toBeDefined()
-    expect(await ui.find({ type: 'Link', text: 'origin/hotfix' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: '✓ working tree clean' })).toBeUndefined()
+
+    // Header: the repository as text and the current branch, chips under them; two quiet buttons on the right.
+    expect(await ui.find({ type: 'Text', text: /^acme\/site$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Link', text: 'acme/site' })).toBeUndefined()
+    expect((await ui.find({ type: 'Button', key: 'refresh' }))?.text).toBe('↻')
+    expect((await ui.find({ type: 'Button', key: 'fetch' }))?.text).toBe('⇣')
+    expect(await ui.find({ type: 'Text', text: /^main$/ })).toBeDefined()
+    // On desktop the marks are chips with padding on each side.
+    expect(await ui.find({ type: 'Text', text: /^\s?↑2 unpushed\s?$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^\s?✎ 3 changes\s?$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^updated just now$/ })).toBeDefined()
+
+    // Branches: the current one is not repeated, the others have marks on the right.
+    expect(await ui.find({ type: 'Text', text: /^BRANCHES$/ })).toBeDefined()
+    expect(await ui.find({ key: 'local-main' })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /^feature\/login$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^↓5$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^#12$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^gone on remote$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^local only$/ })).toBeDefined()
+
+    // PRs: only the number is a link.
+    expect(await ui.find({ type: 'Link', text: '#12' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^Login page$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^approved$/ })).toBeDefined()
+
+    // Commits.
+    expect(await ui.find({ type: 'Link', text: 'a1b2c3d' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^fix: header$/ })).toBeDefined()
+
+    // "On remote" stays collapsed until "Show N" is pressed.
+    expect(await ui.find({ type: 'Text', text: /^ON REMOTE$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^hotfix$/ })).toBeUndefined()
+    expect((await ui.find({ key: 'more-remote' }))?.text).toBe('Show 1')
+    await ui.press({ key: 'more-remote' })
+    expect(await ui.find({ type: 'Text', text: /^hotfix$/ })).toBeDefined()
+    expect((await ui.find({ key: 'more-remote' }))?.text).toBe('Collapse')
+    await ui.press({ key: 'more-remote' })
+    expect(await ui.find({ type: 'Text', text: /^hotfix$/ })).toBeUndefined()
+
     await ui.unmount()
   }
 })
 
-test('not a git folder: clear message', async ($, on) => {
+test('not a git folder: a clear message', async ($, on) => {
   mock.clock(on, { now: NOW })
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('process.run', () => ({ value: { exitCode: 128, stdout: '', stderr: 'not a git repository', isStdoutTruncated: false, isStderrTruncated: false } }))
@@ -139,12 +168,45 @@ test('not a git folder: clear message', async ($, on) => {
   const reply = await $.command.run({ command: 'branches', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
   expect(reply.text).toBe('This folder is not a git repository.')
 
-  const ui = await $.ui.mount({ plugin: 'git-branches', surface: 'desktop', ...PANE })
-  expect(await ui.find({ type: 'Text', text: 'No git repository here' })).toBeDefined()
-  await ui.unmount()
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'git-branches', surface, ...PANE })
+    expect(await ui.find({ type: 'Text', text: /^No git repository here$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'Open a session in a project folder with git' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'refresh' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'BRANCHES' })).toBeUndefined()
+    await ui.unmount()
+  }
 })
 
-test('long list: first 5 branches and a "More N" button', async ($, on) => {
+test('session folder is not git but the project is in a subfolder: the pane shows it', async ($, on) => {
+  mock.clock(on, { now: NOW })
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('fs.list', () => ({
+    value: [
+      { name: '.cache', kind: 'dir', size: 0, mtimeMs: 0, isLink: false },
+      { name: 'notes.txt', kind: 'file', size: 1, mtimeMs: 0, isLink: false },
+      { name: 'site', kind: 'dir', size: 0, mtimeMs: 0, isLink: false },
+    ],
+  }))
+  // The engine passes the path already made absolute.
+  on('fs.exists', (_, e) => ({ value: e.path.replace(/\\/g, '/').endsWith('/site/.git') }))
+  const dirs: (string | undefined)[] = []
+  on('process.run', (_, e) => {
+    dirs.push(e.init?.cwd)
+    if (e.init?.cwd !== 'site') {
+      return { value: { exitCode: 128, stdout: '', stderr: 'not a git repository', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
+
+    return ok(GIT[e.argv.join(' ')] ?? '')
+  })
+
+  const reply = await $.command.run({ command: 'branches', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
+  expect(reply.text).toBe('Branches: 0, current main.')
+  expect(dirs[0]).toBeUndefined()
+  expect(dirs.slice(1).every(dir => dir === 'site')).toBe(true)
+})
+
+test('long list: the first 6 branches and a "More N" button', async ($, on) => {
   mock.clock(on, { now: NOW })
   on('ui.open', () => ({ value: { isPlaced: true } }))
   const many = ['main\torigin/main\t\ta0\t' + T + '\tIvan\tm']
@@ -160,11 +222,23 @@ test('long list: first 5 branches and a "More N" button', async ($, on) => {
   })
 
   await $.command.run({ command: 'branches', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
-  const ui = await $.ui.mount({ plugin: 'git-branches', surface: 'desktop', ...PANE })
-  expect(await ui.find({ type: 'Text', text: 'BRANCHES · 7' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: 'feat-4' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: 'feat-5' })).toBeUndefined()
-  await ui.press({ key: 'more-local' })
-  expect(await ui.find({ type: 'Text', text: 'feat-6' })).toBeDefined()
-  await ui.unmount()
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'git-branches', surface, ...PANE })
+    expect(await ui.find({ type: 'Text', text: /^BRANCHES$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^7$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^feat-5$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^feat-6$/ })).toBeUndefined()
+    expect((await ui.find({ key: 'more-local' }))?.text).toBe('More 1')
+    // No commits: a quiet line instead of an empty card.
+    expect(await ui.find({ type: 'Text', text: /^No commits yet · no open PRs$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^COMMITS$/ })).toBeUndefined()
+
+    await ui.press({ key: 'more-local' })
+    expect(await ui.find({ type: 'Text', text: /^feat-6$/ })).toBeDefined()
+    expect((await ui.find({ key: 'more-local' }))?.text).toBe('Collapse')
+
+    await ui.press({ key: 'more-local' })
+    expect(await ui.find({ type: 'Text', text: /^feat-6$/ })).toBeUndefined()
+    await ui.unmount()
+  }
 })

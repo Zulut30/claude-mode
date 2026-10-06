@@ -9,7 +9,6 @@ const TITLE = 'Ветки'
 const GREEN = '#3fb950'
 const AMBER = '#d29922'
 const RED = '#f85149'
-const BLUE = '#58a6ff'
 
 const snapshot = atom({ plugin: 'git-branches', key: 'snapshot' } as const, null)
 const isLoading = atom({ plugin: 'git-branches', key: 'isLoading' } as const, false)
@@ -154,8 +153,6 @@ export const plural = (n: number, one: string, few: string, many: string) => {
   return mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14) ? few : many
 }
 
-const encodePath = (path: string) => path.split('/').map(encodeURIComponent).join('/')
-
 // ── Снимок репозитория ───────────────────────────────────────────────────
 
 const BRANCH_FORMAT = '%(refname:short)%09%(upstream:short)%09%(upstream:track,nobracket)%09%(objectname:short)%09%(committerdate:unix)%09%(authorname)%09%(subject)'
@@ -175,16 +172,45 @@ const emptySnapshot = (now: number): GitSnapshot => ({
   loadedAt: now,
 })
 
-const loadSnapshot = async ($: EngineInterface): Promise<GitSnapshot> => {
+/** `gh` ходит в сеть: после хода хватает локального git, список PR обновляем не чаще раза в 5 минут. */
+const PR_TTL_MS = 5 * 60_000
+
+/** Чтение статуса не берёт index.lock и не мешает git, запущенному рядом. */
+const GIT_ENV = { GIT_OPTIONAL_LOCKS: '0' }
+
+/** Подпапка с проектом, когда сама папка сессии не git (сессия «без папки» с клоном внутри). */
+let nestedRepo: string | undefined
+
+let prCache: { at: number; slug: string; prs: PullRequest[]; note: string } | undefined
+
+const findNestedRepo = async ($: EngineInterface) => {
+  const entries = await $.fs.list().catch(() => [])
+  for (const entry of entries) {
+    if (entry.kind === 'dir' && !entry.name.startsWith('.') && (await $.fs.exists(`${entry.name}/.git`).catch(() => false))) {
+      return entry.name
+    }
+  }
+
+  return undefined
+}
+
+const loadSnapshot = async ($: EngineInterface, isForced: boolean): Promise<GitSnapshot> => {
   const now = await $.clock.now()
   const git = (args: string[]) =>
     $.process
-      .run(['git', ...args], { timeoutMs: 15_000 })
+      .run(['git', ...args], { timeoutMs: 15_000, env: GIT_ENV, ...(nestedRepo ? { cwd: nestedRepo } : {}) })
       .catch(() => ({ exitCode: 127, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false }))
 
-  const top = await git(['rev-parse', '--show-toplevel'])
+  let top = await git(['rev-parse', '--show-toplevel'])
   if (top.exitCode !== 0) {
-    return emptySnapshot(now)
+    // Папка сессии не проект — ищем клон в подпапках; найденная подпапка пропала — ищем заново в следующий раз.
+    nestedRepo = nestedRepo === undefined ? await findNestedRepo($) : undefined
+    top = nestedRepo === undefined ? top : await git(['rev-parse', '--show-toplevel'])
+    if (top.exitCode !== 0) {
+      nestedRepo = undefined
+
+      return emptySnapshot(now)
+    }
   }
 
   const [head, heads, remotes, status, log, origin] = await Promise.all([
@@ -200,22 +226,25 @@ const loadSnapshot = async ($: EngineInterface): Promise<GitSnapshot> => {
   const branches = parseBranches(heads.stdout, current)
   const slug = origin.exitCode === 0 ? parseGithubSlug(origin.stdout) : ''
 
-  let prs: PullRequest[] = []
-  let prsNote = ''
-  if (slug) {
+  const isPrsFresh = prCache !== undefined && prCache.slug === slug && now - prCache.at < PR_TTL_MS
+  let prs: PullRequest[] = isPrsFresh ? (prCache?.prs ?? []) : []
+  let prsNote = isPrsFresh ? (prCache?.note ?? '') : ''
+  if (slug && (isForced || !isPrsFresh)) {
     try {
       const gh = await $.process.run(
         ['gh', 'pr', 'list', '--state', 'open', '--limit', '30', '--json', 'number,title,headRefName,isDraft,url,reviewDecision,statusCheckRollup'],
-        { timeoutMs: 20_000 },
+        { timeoutMs: 20_000, ...(nestedRepo ? { cwd: nestedRepo } : {}) },
       )
       if (gh.exitCode === 0) {
         prs = parsePrs(gh.stdout)
+        prsNote = ''
       } else {
         prsNote = /auth|login/i.test(gh.stderr) ? 'войдите в gh: gh auth login' : 'gh не смог получить PR'
       }
     } catch {
       prsNote = 'установите GitHub CLI (gh), чтобы видеть PR'
     }
+    prCache = { at: now, slug, prs, note: prsNote }
   }
 
   return {
@@ -235,12 +264,12 @@ const loadSnapshot = async ($: EngineInterface): Promise<GitSnapshot> => {
 
 let inflight: Promise<GitSnapshot | null> | null = null
 
-/** Перечитать репозиторий; параллельные вызовы ждут один и тот же. */
-const refresh = ($: EngineInterface) => {
+/** Перечитать репозиторий; параллельные вызовы ждут один и тот же. `isForced` — и список PR тоже, не глядя на кэш. */
+const refresh = ($: EngineInterface, isForced = false) => {
   inflight ??= (async () => {
     await update($, isLoading, () => true)
     try {
-      const next = await loadSnapshot($)
+      const next = await loadSnapshot($, isForced)
       await update($, snapshot, () => next)
 
       return next
@@ -264,105 +293,207 @@ const fetchAll = async ($: EngineInterface) => {
     $.ui.toast(`git fetch не удался: ${result.stderr.trim().split('\n')[0] ?? ''}`)
   }
 
-  return refresh($)
+  return refresh($, true)
+}
+
+const isPaneOpen = async ($: EngineInterface) => (await $.ui.panes().catch(() => [])).some(pane => pane.id === PANE)
+
+/** Фоновое обновление — только пока панель открыта: закрытая не запускает git. */
+const refreshIfOpen = async ($: EngineInterface) => {
+  if (await isPaneOpen($)) {
+    await refresh($)
+  }
 }
 
 // ── Отрисовка ────────────────────────────────────────────────────────────
 
+const BLUE = '#58a6ff'
+const PURPLE = '#bc8cff'
 const GRAY = '#8b949e'
 
-/** Высота строки текста на десктопе, в пикселях: по ней значки встают вровень с текстом. */
+/** Высота строки текста на десктопе: по ней значки встают вровень с текстом. */
 const LINE_PX = 20
 
 /** Сколько строк показывать в секции, пока её не развернули. */
-const SECTION_LIMIT = 5
+const SECTION_LIMIT = 6
 
-type Mark = 'current' | 'branch' | 'remote' | 'pr' | 'draft' | 'passing' | 'failing' | 'running' | 'commit'
+/** Отступ строк под текстом заголовка: значок и зазор. */
+const INDENT = 2
 
-const MARKS: Record<Mark, { glyph: string; color?: string; alt: string }> = {
-  current: { glyph: '●', color: GREEN, alt: 'текущая ветка' },
-  branch: { glyph: '○', alt: 'ветка' },
-  remote: { glyph: '◌', color: BLUE, alt: 'ветка на сервере' },
-  pr: { glyph: '○', color: BLUE, alt: 'pull request' },
-  draft: { glyph: '◌', alt: 'черновик' },
-  passing: { glyph: '✓', color: GREEN, alt: 'проверки прошли' },
-  failing: { glyph: '✗', color: RED, alt: 'проверки упали' },
-  running: { glyph: '●', color: AMBER, alt: 'проверки идут' },
-  commit: { glyph: '•', alt: 'коммит' },
+/** Промежуток между левой и правой частью строки, в ячейках. */
+const GAP = 2
+
+/** Фон карточки секции на десктопе. */
+const CARD = '#8b949e14'
+
+/** Как выглядит заголовок секции: название, цвет, значок в терминале (`glyph`) и на десктопе (`icon`). */
+type Look = { title: string; color: string; glyph: string; icon: string }
+
+const STROKE = 'fill="none" stroke="C" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"'
+
+/** Значки в сетке 16×16 (C — цвет). */
+const LOOKS: Record<SectionId, Look> = {
+  local: {
+    title: 'ВЕТКИ',
+    color: BLUE,
+    glyph: '⎇',
+    icon:
+      `<circle cx="4.5" cy="3.5" r="1.8" ${STROKE}/><circle cx="4.5" cy="12.5" r="1.8" ${STROKE}/>` +
+      `<circle cx="11.5" cy="4.5" r="1.8" ${STROKE}/><path d="M4.5 5.3V10.7M11.5 6.3C11.5 9.2 4.5 8.2 4.5 10.7" ${STROKE}/>`,
+  },
+  prs: {
+    title: 'PULL REQUESTS',
+    color: PURPLE,
+    glyph: '⇄',
+    icon:
+      `<circle cx="4.5" cy="3.5" r="1.8" ${STROKE}/><circle cx="4.5" cy="12.5" r="1.8" ${STROKE}/>` +
+      `<circle cx="11.5" cy="12.5" r="1.8" ${STROKE}/><path d="M4.5 5.3V10.7M11.5 10.7V6.5C11.5 5.1 10.6 4 9 4H7M8.6 2.3L7 4L8.6 5.7" ${STROKE}/>`,
+  },
+  commits: {
+    title: 'КОММИТЫ',
+    color: GREEN,
+    glyph: '◉',
+    icon: `<circle cx="8" cy="8" r="2.8" ${STROKE}/><path d="M1.5 8H5.2M10.8 8H14.5" ${STROKE}/>`,
+  },
+  remote: {
+    title: 'НА СЕРВЕРЕ',
+    color: GRAY,
+    glyph: '◌',
+    icon: `<path d="M4.6 11.9H11.6A2.7 2.7 0 0 0 11.5 6.5A3.8 3.8 0 0 0 4.3 7.1A2.4 2.4 0 0 0 4.6 11.9Z" ${STROKE}/>`,
+  },
 }
 
-const PR_MARKS: Record<Checks, Mark> = { passing: 'passing', failing: 'failing', pending: 'running', none: 'pr' }
+/** Узел графа коммитов: у HEAD линия уходит только вниз. */
+type GraphNode = 'head' | 'commit'
 
-/** Значки в том же стиле, что и на дорожной карте; у коммита — линия, как в графе GitLens. */
-const iconSvg = (mark: Mark, size: number) => {
-  const ring = (color: string, extra = '') =>
-    `<circle cx="8" cy="8" r="5.8" fill="none" stroke="${color}" stroke-width="1.7"${extra}/>`
-  const body: Record<Mark, string> = {
-    current: `<circle cx="8" cy="8" r="6.4" fill="${GREEN}"/><circle cx="8" cy="8" r="2.4" fill="#fff"/>`,
-    branch: ring(GRAY, ' stroke-opacity=".8"'),
-    remote: ring(BLUE, ' stroke-dasharray="2.4 1.8"'),
-    pr: ring(BLUE),
-    draft: ring(GRAY, ' stroke-dasharray="2.4 1.8" stroke-opacity=".8"'),
-    passing:
-      `<circle cx="8" cy="8" r="7" fill="${GREEN}"/>` +
-      `<path d="M4.9 8.2l2 2 4.2-4.4" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>`,
-    failing:
-      `<circle cx="8" cy="8" r="7" fill="${RED}"/>` +
-      `<path d="M5.7 5.7l4.6 4.6M10.3 5.7l-4.6 4.6" stroke="#fff" stroke-width="1.7" stroke-linecap="round"/>`,
-    running: `${ring(AMBER)}<circle cx="8" cy="8" r="2.6" fill="${AMBER}"/>`,
-    commit:
-      `<path d="M8 -20V4.6M8 11.4V36" stroke="${GRAY}" stroke-opacity=".45" stroke-width="1.4"/>` +
-      `<circle cx="8" cy="8" r="3.3" fill="none" stroke="${GRAY}" stroke-width="1.6"/>`,
-  }
-  const unitsHigh = (LINE_PX * 16) / size
+/** Узлы графа в колонке значка секции (C — цвет линии): линия проходит сквозь строку и сшивает соседние. */
+const NODES: Record<GraphNode, string> = {
+  head:
+    `<path d="M8 11.4V22" stroke="C" stroke-opacity=".45" stroke-width="1.4"/>` +
+    `<circle cx="8" cy="8" r="5.4" fill="${GREEN}" fill-opacity=".22"/><circle cx="8" cy="8" r="3.2" fill="${GREEN}"/>`,
+  commit:
+    `<path d="M8 -6V5M8 11V22" stroke="C" stroke-opacity=".45" stroke-width="1.4"/>` +
+    `<circle cx="8" cy="8" r="3" fill="none" stroke="C" stroke-width="1.6"/>`,
+}
+
+/** Значок 12×LINE_PX: сетка 16×16 по центру строки. */
+const iconSvg = (body: string, color: string) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="${LINE_PX}" viewBox="0 ${(16 - (LINE_PX * 16) / 12) / 2} 16 ${(LINE_PX * 16) / 12}">` +
+  body.replace(/"C"/g, `"${color}"`) +
+  `</svg>`
+
+const AVATAR_COLORS = [BLUE, PURPLE, GREEN, AMBER, GRAY]
+
+/** Инициалы автора: «Ivan Petrov» → «IP», «Zulut30» → «ZU». */
+export const initials = (name: string) => {
+  const words = name.replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean)
+  const letters = words.length >= 2 ? `${words[0]?.[0] ?? ''}${words[1]?.[0] ?? ''}` : (words[0] ?? '?').slice(0, 2)
+
+  return letters.toUpperCase()
+}
+
+/** Кружок с инициалами автора: мягкая подложка и буквы цветом, как у плашек; цвет постоянный для одного имени. */
+const avatarSvg = (name: string) => {
+  const hash = [...name].reduce((sum, char) => (sum * 31 + (char.codePointAt(0) ?? 0)) % 9973, 7)
+  const color = AVATAR_COLORS[hash % AVATAR_COLORS.length] ?? GRAY
 
   return (
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${LINE_PX}" ` +
-    `viewBox="0 ${(16 - unitsHigh) / 2} 16 ${unitsHigh}">${body[mark]}</svg>`
+    `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="${LINE_PX}" viewBox="0 ${(16 - LINE_PX) / 2} 16 ${LINE_PX}">` +
+    `<circle cx="8" cy="8" r="7.5" fill="${color}" fill-opacity=".2"/>` +
+    `<text x="8" y="10.6" text-anchor="middle" font-family="Segoe UI, system-ui, sans-serif" font-size="7" font-weight="600" fill="${color}">${initials(name)}</text>` +
+    `</svg>`
   )
 }
 
-const SECTION_TITLES: Record<SectionId, string> = {
-  local: 'ВЕТКИ',
-  prs: 'PULL REQUESTS',
-  remote: 'НА СЕРВЕРЕ',
-  commits: 'КОММИТЫ',
-}
+/** Кусок строки. Без цвета и без `bold` он приглушён. */
+type Part = { text: string; color?: string; bold?: boolean }
+
+const isPart = (part: Part | null | false | undefined): part is Part => Boolean(part)
+
+const width = (text: string) => [...text].length
 
 const short = (text: string, max: number) => {
-  const line = text.replace(/\s+/g, ' ').trim()
+  const chars = [...text.replace(/\s+/g, ' ').trim()]
 
-  return line.length > max ? `${line.slice(0, Math.max(1, max - 1))}…` : line
+  return chars.length > max ? `${chars.slice(0, Math.max(1, max - 1)).join('')}…` : chars.join('')
 }
+
+/** Уложить куски в `room` ячеек (между кусками — `sep` ячеек): последний влезающий режется, хвост отбрасывается. */
+const fit = (parts: readonly Part[], room: number, sep: number) => {
+  const out: Part[] = []
+  let left = room
+  for (const part of parts) {
+    const cost = out.length > 0 ? sep : 0
+    const need = width(part.text)
+    if (need + cost <= left) {
+      out.push(part)
+      left -= need + cost
+      continue
+    }
+    if (out.length === 0 || left - cost >= 4) {
+      out.push({ ...part, text: short(part.text, Math.max(2, left - cost)) })
+    }
+    break
+  }
+
+  return out
+}
+
+const partsWidth = (parts: readonly Part[]) => parts.reduce((sum, part, i) => sum + width(part.text) + (i > 0 ? 1 : 0), 0)
 
 /** «3 ч назад» → «3 ч»: в строках списка «назад» лишнее. */
 const ago = (unixSeconds: number, now: number) => relativeTime(unixSeconds, now).replace(/ назад$/, '')
 
+const CHECK_PARTS: Record<Checks, Part | null> = {
+  passing: { text: '✓', color: GREEN },
+  failing: { text: '✗', color: RED },
+  pending: { text: '●', color: AMBER },
+  none: null,
+}
+
+/** Цвет решения ревью: одобрено — хорошо, правки — ждёт автора; «ждёт ревью» обычное и приглушено. */
+const REVIEW_COLORS: Record<string, string> = { одобрено: GREEN, 'нужны правки': AMBER }
+
+/**
+ * Строка секции: главное (режется под `room`), справа пометки, автор и время; у коммитов — узел графа в колонке значка.
+ * `badge` — состояние проверок: крайним справа среди пометок и не режется вместе с ними.
+ */
+type Line = {
+  key: string
+  main: (room: number) => RenderChildren[]
+  meta: Part[]
+  badge?: Part | null
+  time: string
+  author?: string
+  node?: GraphNode
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
+    // Имя занято другим плагином — команды не будет, но остальной старт сессии должен пройти.
     await $.command.register({
       name: 'branches',
       description: 'Открыть панель веток Git (`/branches fetch` — сначала git fetch)',
-    })
+    }).catch(() => undefined)
     // Первое чтение — вне старта сессии, чтобы не задерживать его; панель открывается сама только в git-проекте.
     $.clock.after(0, () => {
-      void refresh($).then(found => (found?.isRepo ? $.ui.open({ id: PANE, title: TITLE }) : undefined))
+      void refresh($).then(found => (found?.isRepo ? $.ui.open({ id: PANE, title: TITLE }) : undefined)).catch(() => undefined)
     })
-    $.clock.every(180_000, () => void refresh($))
+    $.clock.every(180_000, () => void refreshIfOpen($))
 
     return next(e)
   })
 
   on('command.run', { command: 'branches' }, async ($, e) => {
     await $.ui.open({ id: PANE, title: TITLE })
-    const found = await (e.args.trim() === 'fetch' ? fetchAll($) : refresh($))
+    const found = await (e.args.trim() === 'fetch' ? fetchAll($) : refresh($, true))
 
     return { text: found?.isRepo ? `Ветки: ${found.branches.length}, текущая ${found.current}.` : 'Эта папка не git-репозиторий.' }
   })
 
-  // Claude мог закоммитить или переключить ветку — перечитываем после хода.
+  // Claude мог закоммитить или переключить ветку — перечитываем после хода (PR — из кэша).
   on('turn.complete', async ($, e, next) => {
-    $.clock.after(0, () => void refresh($))
+    $.clock.after(0, () => void refreshIfOpen($))
 
     return next(e)
   })
@@ -377,59 +508,50 @@ export const register: Register = on => {
     const open = await read($, expanded)
     const now = await $.clock.now()
 
-    const columns = e.props.bodyColumns
-    const narrow = columns < 44
-    // Ширина текста рядом со значком. Тексты режем заранее: длинная строка с обрезкой
-    // на десктопе всё равно занимает высоту, как если бы переносилась.
-    const room = Math.max(16, columns - 4)
+    // Все тексты режем заранее под ширину: перенос на десктопе занимает лишнюю высоту.
+    // `full` — шапка и тихие строки, `inner` — содержимое карточки (на десктопе без её полей).
+    const full = Math.max(24, e.props.bodyColumns)
+    const inner = full - (Svg ? 2 : 0)
+    const narrow = full < 48
+    /** Место под кнопки шапки: на десктопе они родные и шире. */
+    const toolbarW = Svg ? 10 : 5
 
-    const icon = (mark: Mark, isSmall = false) =>
+    const mark = (look: Look, color = look.color, alt = 'значок') =>
+      Svg ? <Svg source={iconSvg(look.icon, color)} alt={alt} width={12} height={LINE_PX} /> : <Text color={color}>{look.glyph}</Text>
+
+    const node = (kind: GraphNode) =>
       Svg ? (
-        <Svg source={iconSvg(mark, isSmall ? 12 : 16)} alt={MARKS[mark].alt} width={isSmall ? 12 : 16} height={LINE_PX} />
+        <Svg source={iconSvg(NODES[kind], GRAY)} alt={kind === 'head' ? 'последний коммит' : 'коммит'} width={12} height={LINE_PX} />
+      ) : kind === 'head' ? (
+        <Text color={GREEN}>●</Text>
       ) : (
-        <Text color={MARKS[mark].color} dimColor={!MARKS[mark].color}>
-          {MARKS[mark].glyph}
-        </Text>
+        <Text dimColor>○</Text>
       )
 
-    /** Строка списка: значок, главное и справа короткие пометки; под главным — пояснение. */
-    const row = (key: string, mark: Mark, main: RenderChildren, right: RenderChildren, sub?: { text: string; color?: string }) => (
-      <Box key={key} flexDirection="row" columnGap={1}>
-        {icon(mark)}
-        <Box key={`${key}-body`} flexDirection="column" flexGrow={1} flexShrink={1}>
-          <Box key={`${key}-main`} flexDirection="row" justifyContent="space-between" columnGap={1}>
-            {main}
-            {right}
-          </Box>
-          {sub && !narrow ? (
-            <Text color={sub.color} dimColor={!sub.color}>
-              {short(sub.text, room)}
-            </Text>
-          ) : null}
-        </Box>
-      </Box>
-    )
-
-    const toolbar = (
-      <Box key="toolbar" flexDirection="row" columnGap={1} flexShrink={0}>
-        <Button key="refresh" label="↻ Обновить" onPress={() => void refresh($)} />
-        <Button key="fetch" label="⇣ Fetch" onPress={() => void fetchAll($)} />
-      </Box>
+    const tone = (part: Part) => (
+      <Text bold={part.bold} color={part.color} dimColor={!part.color && !part.bold}>
+        {part.text}
+      </Text>
     )
 
     if (!snap || !snap.isRepo) {
-      const title = !snap ? (loading ? 'Читаю репозиторий…' : 'Нет данных') : 'Здесь нет git-репозитория'
-      const hint = !snap
-        ? 'Нажмите «Обновить».'
-        : 'Откройте сессию в папке проекта с git — тут появятся ветки, pull request’ы и коммиты.'
+      const [title, hint] = !snap
+        ? loading
+          ? ['Читаю репозиторий…', 'Это займёт пару секунд.']
+          : ['Нет данных', 'Нажмите ↻, чтобы прочитать репозиторий.']
+        : ['Здесь нет git-репозитория', 'Откройте сессию в папке проекта с git.']
 
       return (
-        <Box flexDirection="column" rowGap={1}>
-          <Text bold>{title}</Text>
-          <Text dimColor wrap="wrap">
-            {hint}
-          </Text>
-          {toolbar}
+        <Box flexDirection="column">
+          <Box key="head-top" flexDirection="row" justifyContent="space-between" alignItems="flex-start" columnGap={GAP}>
+            <Box key="head-title" flexDirection="column" flexShrink={1}>
+              <Text bold>{short(title, full - toolbarW)}</Text>
+              <Text dimColor>{short(hint, full - toolbarW)}</Text>
+            </Box>
+            <Box key="toolbar" flexDirection="row" flexShrink={0}>
+              <Button key="refresh" plain dimColor label="↻" onPress={() => void refresh($, true)} />
+            </Box>
+          </Box>
         </Box>
       )
     }
@@ -438,168 +560,232 @@ export const register: Register = on => {
     const prByBranch = new Map(snap.prs.map(pr => [pr.branch, pr]))
     const current = snap.branches.find(branch => branch.isCurrent)
     const others = snap.branches.filter(branch => !branch.isCurrent)
+
+    // ── Шапка: репозиторий и ветка, под ними плашки статуса и время обновления; справа тихие кнопки.
+
+    const repoName = snap.slug || snap.root.split(/[\\/]/).pop() || 'репозиторий'
+    const branchName = snap.current === 'HEAD' ? 'отсоединённый HEAD' : snap.current || 'нет коммитов'
+    // Узко — режем сначала репозиторий: ветка важнее.
+    const titleRoom = full - toolbarW - GAP - INDENT
+    const repoRoom = Math.max(6, Math.min(width(repoName), titleRoom - Math.min(width(branchName), Math.ceil(titleRoom * 0.55))))
+    const branchRoom = Math.max(6, titleRoom - repoRoom)
+
+    const sync: Part[] = !current
+      ? []
+      : !current.upstream
+        ? [{ text: 'не опубликована', color: AMBER }]
+        : current.ahead || current.behind
+          ? ([
+              current.ahead ? { text: `↑${current.ahead} не запушено`, color: BLUE } : null,
+              current.behind ? { text: `↓${current.behind} не подтянуто`, color: AMBER } : null,
+            ] as (Part | null)[]).filter(isPart)
+          : [{ text: '✓ синхронизирована', color: GREEN }]
     const { staged, unstaged, untracked } = snap.changes
     const dirty = staged + unstaged + untracked
-    const changeParts = [
-      unstaged ? `${unstaged} изменено` : '',
-      staged ? `${staged} в индексе` : '',
-      untracked ? `${untracked} ${plural(untracked, 'новый', 'новых', 'новых')}` : '',
-    ].filter(Boolean)
+    const tree: Part = dirty
+      ? { text: `✎ ${dirty} ${plural(dirty, 'изменение', 'изменения', 'изменений')}`, color: AMBER }
+      : { text: '✓ чисто', color: GREEN }
+    const updated = loading ? 'обновляю…' : `обновлено ${relativeTime(Math.floor(snap.loadedAt / 1000), now)}`
 
-    const sync = !current
-      ? { text: '', color: undefined }
-      : !current.upstream
-        ? { text: 'не опубликована', color: AMBER }
-        : current.ahead || current.behind
-          ? {
-              text: [current.ahead ? `↑${current.ahead} не запушено` : '', current.behind ? `↓${current.behind} не подтянуто` : '']
-                .filter(Boolean)
-                .join(' · '),
-              color: current.behind ? AMBER : GREEN,
-            }
-          : { text: 'синхронизирована', color: undefined }
+    // Плашка на десктопе — текст на мягкой цветной подложке с пробелом по краям; в терминале просто цветом.
+    const chipPad = Svg ? 2 : 0
+    const chipGap = Svg ? 1 : GAP
+    const chips = fit([...sync, tree], full - chipPad, chipGap + chipPad)
+    const chipsW = chips.reduce((sum, part, i) => sum + width(part.text) + chipPad + (i > 0 ? chipGap : 0), 0)
+    const showUpdated = full - chipsW - chipGap >= width(updated)
+
+    const chip = (part: Part) =>
+      Svg && part.color ? (
+        <Text color={part.color} backgroundColor={`${part.color}26`}>
+          {` ${part.text} `}
+        </Text>
+      ) : (
+        tone(part)
+      )
+
+    const header = (
+      <Box key="head" flexDirection="column">
+        <Box key="head-top" flexDirection="row" justifyContent="space-between" alignItems="center" columnGap={GAP}>
+          <Box key="head-title" flexDirection="row" alignItems="center" columnGap={GAP} flexShrink={1}>
+            <Text bold>{short(repoName, repoRoom)}</Text>
+            <Box key="head-branch" flexDirection="row" alignItems="center" columnGap={1}>
+              {mark(LOOKS.local, GREEN, 'текущая ветка')}
+              <Text bold>{short(branchName, branchRoom)}</Text>
+            </Box>
+          </Box>
+          <Box key="toolbar" flexDirection="row" columnGap={1} flexShrink={0}>
+            <Button key="refresh" plain dimColor label="↻" onPress={() => void refresh($, true)} />
+            <Button key="fetch" plain dimColor label="⇣" onPress={() => void fetchAll($)} />
+          </Box>
+        </Box>
+        <Box key="head-status" flexDirection="row" alignItems="center" columnGap={chipGap}>
+          {chips.map(chip)}
+          {showUpdated ? <Text dimColor>{updated}</Text> : null}
+        </Box>
+      </Box>
+    )
+
+    // ── Секции-карточки: значок и название цветом секции, число справа, строки под названием.
 
     const toggle = (id: SectionId) => update($, expanded, list => (list.includes(id) ? list.filter(one => one !== id) : [...list, id]))
 
-    /** Секция: заголовок текстом, первые строки и одна кнопка «Ещё N», если строк больше. */
-    const section = (id: SectionId, title: string, rows: RenderChildren[], empty?: string) => {
+    /** Строка: слева главное, справа пометки, автор и время; без фиксированных ширин. */
+    const row = (line: Line, meta: Part[], room: number, timeW: number) => {
+      const body = (
+        <Box key={`${line.key}-body`} flexDirection="row" justifyContent="space-between" alignItems="center" columnGap={GAP} flexGrow={1}>
+          <Box key={`${line.key}-main`} flexDirection="row" alignItems="center" columnGap={1} flexShrink={1}>
+            {line.main(room)}
+          </Box>
+          <Box key={`${line.key}-right`} flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
+            {meta.map(tone)}
+            {line.author && !narrow ? (
+              Svg ? (
+                <Svg source={avatarSvg(line.author)} alt={line.author} width={16} height={LINE_PX} />
+              ) : (
+                <Text dimColor>{initials(line.author)}</Text>
+              )
+            ) : null}
+            {timeW ? <Text dimColor>{line.time}</Text> : null}
+          </Box>
+        </Box>
+      )
+
+      // Узел графа встаёт в колонку значка секции, текст — вровень с заголовком.
+      return line.node ? (
+        <Box key={line.key} flexDirection="row" alignItems="center" columnGap={1}>
+          {node(line.node)}
+          {body}
+        </Box>
+      ) : (
+        <Box key={line.key} flexDirection="row" paddingLeft={INDENT}>
+          {body}
+        </Box>
+      )
+    }
+
+    /** Секция-карточка; `isCollapsed` — свёрнута целиком, пока не раскроют. */
+    const section = (id: SectionId, lines: Line[], isCollapsed = false) => {
+      const look = LOOKS[id]
       const isOpen = open.includes(id)
-      const shown = isOpen ? rows : rows.slice(0, SECTION_LIMIT)
+      const limit = isCollapsed ? 0 : SECTION_LIMIT
+      const hidden = lines.length - limit
+      const visible = isOpen ? lines : lines.slice(0, limit)
+
+      const maxMeta = Math.max(6, Math.floor(inner * 0.4))
+      const metas = visible.map(line => [...fit(line.meta, maxMeta - (line.badge ? 2 : 0), 1), ...(line.badge ? [line.badge] : [])])
+      const metaW = Math.max(0, ...metas.map(partsWidth))
+      const timeW = narrow ? 0 : Math.max(0, ...visible.map(line => width(line.time)))
+      const authorW = !narrow && visible.some(line => line.author) ? 3 : 0
+      const room = Math.max(8, inner - INDENT - (metaW ? metaW + GAP : 0) - authorW - (timeW ? timeW + GAP : 0) - 1)
 
       return (
-        <Box key={`section-${id}`} flexDirection="column" marginTop={1}>
-          <Text dimColor bold>
-            {title}
-            {rows.length ? ` · ${rows.length}` : ''}
-          </Text>
-          {rows.length === 0 && empty ? <Text dimColor>{empty}</Text> : null}
-          {shown}
-          {rows.length > SECTION_LIMIT ? (
-            <Button
-              key={`more-${id}`}
-              plain
-              dimColor
-              label={isOpen ? 'Свернуть' : `Ещё ${rows.length - SECTION_LIMIT}`}
-              onPress={() => toggle(id)}
-            />
+        <Box
+          key={`section-${id}`}
+          flexDirection="column"
+          marginTop={1}
+          {...(Svg ? { backgroundColor: CARD, paddingX: 1, paddingY: 1 } : {})}
+        >
+          <Box key={`section-${id}-head`} flexDirection="row" justifyContent="space-between" alignItems="center" columnGap={1}>
+            <Box key={`section-${id}-title`} flexDirection="row" alignItems="center" columnGap={1}>
+              {mark(look)}
+              <Text bold color={look.color}>
+                {short(look.title, Math.max(8, inner - 8))}
+              </Text>
+            </Box>
+            <Text dimColor>{String(lines.length)}</Text>
+          </Box>
+          {visible.map((line, i) => row(line, metas[i] ?? [], room, timeW))}
+          {hidden > 0 ? (
+            <Box key={`more-${id}-row`} flexDirection="row" paddingLeft={INDENT}>
+              <Button
+                key={`more-${id}`}
+                plain
+                dimColor
+                label={isOpen ? 'Свернуть' : isCollapsed ? `Показать ${lines.length}` : `Ещё ${hidden}`}
+                onPress={() => toggle(id)}
+              />
+            </Box>
           ) : null}
         </Box>
       )
     }
 
-    const branchRow = (branch: Branch) => {
+    const branchLine = (branch: Branch): Line => {
       const pr = prByBranch.get(branch.name)
-      const badges = [
-        branch.ahead ? { text: `↑${branch.ahead}`, color: GREEN } : null,
-        branch.behind ? { text: `↓${branch.behind}`, color: AMBER } : null,
-        branch.isGone ? { text: 'нет на сервере', color: RED } : null,
-        !branch.upstream && !branch.isGone ? { text: 'только локально', color: undefined } : null,
-        pr ? { text: `#${pr.number}`, color: BLUE } : null,
-        narrow ? null : { text: ago(branch.time, now), color: undefined },
-      ].filter((badge): badge is { text: string; color: string | undefined } => badge !== null)
-      const width = badges.reduce((sum, badge) => sum + badge.text.length + 1, 0)
-      const name = short(branch.name, room - width - 1)
-      const href = web && branch.upstream && !branch.isGone ? `${web}/tree/${encodePath(branch.name)}` : ''
 
-      return row(
-        `local-${branch.name}`,
-        pr && pr.checks !== 'none' ? PR_MARKS[pr.checks] : 'branch',
-        href ? <Link href={href} label={name} /> : <Text>{name}</Text>,
-        <Box key={`local-${branch.name}-badges`} flexDirection="row" columnGap={1} flexShrink={0}>
-          {badges.map(badge => (
-            <Text color={badge.color} dimColor={!badge.color}>
-              {badge.text}
-            </Text>
-          ))}
-        </Box>,
-        { text: `${branch.hash} ${branch.subject}` },
-      )
+      return {
+        key: `local-${branch.name}`,
+        main: room => [<Text>{short(branch.name, room)}</Text>],
+        meta: [
+          branch.behind ? { text: `↓${branch.behind}`, color: AMBER } : null,
+          branch.ahead ? { text: `↑${branch.ahead}` } : null,
+          branch.isGone ? { text: 'удалена на сервере', color: RED } : null,
+          !branch.upstream && !branch.isGone ? { text: 'локальная' } : null,
+          pr ? { text: `#${pr.number}` } : null,
+        ].filter(isPart),
+        badge: pr ? CHECK_PARTS[pr.checks] : null,
+        time: ago(branch.time, now),
+      }
     }
 
-    const prRow = (pr: PullRequest) => {
-      const checks = { passing: 'проверки прошли', failing: 'проверки упали', pending: 'проверки идут', none: '' }[pr.checks]
-      const facts = [pr.branch, pr.isDraft ? 'черновик' : '', checks, pr.review].filter(Boolean).join(' · ')
+    const prLine = (pr: PullRequest): Line => {
       const number = `#${pr.number}`
 
-      return row(
-        `pr-${pr.number}`,
-        pr.isDraft ? 'draft' : PR_MARKS[pr.checks],
-        <Link href={pr.url} label={short(pr.title, room - number.length - 1)} />,
-        <Text color={pr.isDraft ? undefined : BLUE} dimColor={pr.isDraft}>
-          {number}
-        </Text>,
-        { text: facts, color: pr.checks === 'failing' ? RED : undefined },
-      )
+      return {
+        key: `pr-${pr.number}`,
+        main: room => [<Link href={pr.url} label={number} />, <Text>{short(pr.title, room - width(number) - 1)}</Text>],
+        meta: [
+          pr.isDraft ? { text: 'черновик' } : null,
+          pr.review ? { text: pr.review, color: REVIEW_COLORS[pr.review] } : null,
+        ].filter(isPart),
+        badge: CHECK_PARTS[pr.checks],
+        time: '',
+      }
     }
 
-    const remoteRow = (branch: RemoteBranch) => {
-      const time = narrow ? '' : ago(branch.time, now)
-      const label = short(branch.name, room - time.length - 1)
-      const path = branch.name.replace(/^[^/]+\//, '')
+    const commitLine = (commit: Commit, index: number): Line => ({
+      key: `commit-${commit.hash}`,
+      // Самый свежий коммит — HEAD: зелёный узел графа.
+      node: index === 0 ? 'head' : 'commit',
+      author: commit.author,
+      main: room => [
+        web ? <Link href={`${web}/commit/${commit.hash}`} label={commit.hash} /> : <Text dimColor>{commit.hash}</Text>,
+        <Text>{short(commit.subject, room - width(commit.hash) - 1)}</Text>,
+      ],
+      meta: [],
+      time: ago(commit.time, now),
+    })
 
-      return row(
-        `remote-${branch.name}`,
-        'remote',
-        web ? <Link href={`${web}/tree/${encodePath(path)}`} label={label} /> : <Text>{label}</Text>,
-        time ? <Text dimColor>{time}</Text> : null,
-        { text: `${branch.author} · ${branch.subject}` },
-      )
-    }
+    const remoteLine = (branch: RemoteBranch): Line => ({
+      key: `remote-${branch.name}`,
+      author: branch.author || undefined,
+      main: room => [<Text>{short(branch.name.replace(/^origin\//, ''), room)}</Text>],
+      meta: [],
+      time: ago(branch.time, now),
+    })
 
-    const commitRow = (commit: Commit) => {
-      const time = narrow ? '' : ago(commit.time, now)
-      const subject = short(commit.subject, room - commit.hash.length - time.length - 2)
-
-      return (
-        <Box key={`commit-${commit.hash}`} flexDirection="row" columnGap={1}>
-          {icon('commit')}
-          <Box key={`commit-${commit.hash}-main`} flexDirection="row" justifyContent="space-between" columnGap={1} flexGrow={1} flexShrink={1}>
-            <Box key={`commit-${commit.hash}-text`} flexDirection="row" columnGap={1}>
-              {web ? <Link href={`${web}/commit/${commit.hash}`} label={commit.hash} /> : <Text color={AMBER}>{commit.hash}</Text>}
-              <Text>{subject}</Text>
-            </Box>
-            {time ? <Text dimColor>{time}</Text> : null}
-          </Box>
-        </Box>
-      )
-    }
+    // Пустое — одной тихой строкой вместо пустых карточек; длинная подсказка про gh — последней.
+    const quiet = [
+      others.length === 0 ? 'других веток нет' : '',
+      snap.commits.length === 0 ? 'коммитов пока нет' : '',
+      snap.slug && snap.prs.length === 0 ? snap.prsNote || 'открытых PR нет' : '',
+    ]
+      .filter(Boolean)
+      .join(' · ')
+      .replace(/^./, letter => letter.toUpperCase())
 
     return (
       <Box flexDirection="column">
-        <Box key="head" flexDirection="column">
-          <Box key="head-top" flexDirection="row" justifyContent="space-between" alignItems="center" columnGap={1}>
-            <Text bold>{short(snap.slug || snap.root.split(/[\\/]/).pop() || 'репозиторий', room - 24)}</Text>
-            {toolbar}
+        {header}
+        {others.length > 0 ? section('local', others.map(branchLine)) : null}
+        {snap.slug && snap.prs.length > 0 ? section('prs', snap.prs.map(prLine)) : null}
+        {quiet ? (
+          <Box key="quiet" flexDirection="row" marginTop={1}>
+            <Text dimColor>{short(quiet, full)}</Text>
           </Box>
-          <Box key="head-meta" flexDirection="row" columnGap={1}>
-            <Text dimColor>{loading ? 'обновляю…' : `обновлено ${relativeTime(Math.floor(snap.loadedAt / 1000), now)}`}</Text>
-            {web ? <Link href={web} label="открыть на GitHub" /> : null}
-          </Box>
-        </Box>
-
-        <Box key="current" flexDirection="column" marginTop={1} {...(Svg ? { backgroundColor: '#3fb9501a', paddingX: 1 } : {})}>
-          {row(
-            'current-branch',
-            'current',
-            <Text bold>{short(snap.current === 'HEAD' ? 'отсоединённый HEAD' : snap.current, room - sync.text.length - 1)}</Text>,
-            sync.text ? (
-              <Text color={sync.color} dimColor={!sync.color}>
-                {sync.text}
-              </Text>
-            ) : null,
-            dirty
-              ? { text: `✎ ${changeParts.join(' · ')}`, color: AMBER }
-              : { text: '✓ рабочая копия чистая', color: GREEN },
-          )}
-        </Box>
-
-        {section('local', SECTION_TITLES.local, others.map(branchRow), 'других веток нет')}
-
-        {snap.slug ? section('prs', SECTION_TITLES.prs, snap.prs.map(prRow), snap.prsNote || 'открытых PR нет') : null}
-
-        {snap.remotes.length > 0 ? section('remote', SECTION_TITLES.remote, snap.remotes.map(remoteRow)) : null}
-
-        {section('commits', `${SECTION_TITLES.commits} · ${short(snap.current, 24)}`, snap.commits.map(commitRow), 'коммитов пока нет')}
+        ) : null}
+        {snap.commits.length > 0 ? section('commits', snap.commits.map(commitLine)) : null}
+        {snap.remotes.length > 0 ? section('remote', snap.remotes.map(remoteLine), true) : null}
       </Box>
     )
   })

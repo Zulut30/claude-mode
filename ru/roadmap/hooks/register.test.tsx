@@ -231,6 +231,10 @@ describe('точность', () => {
     expect(classify({ tool: 'Bash', command: 'git commit -m "prepare deploy to vercel"' })?.stage).toBe('push')
     expect(classify({ tool: 'Bash', command: 'npx vercel --prod' })?.stage).toBe('deploy')
     expect(classify({ tool: 'Bash', command: 'npm run deploy' })?.stage).toBe('deploy')
+    // «git add && git commit && git push» — это пуш целиком, а не «только коммит».
+    const both = classify({ tool: 'Bash', command: 'git add -A && git commit -m "x" && git push origin main' })
+    expect(both).toEqual({ stage: 'push', last: 'git push origin main' })
+    expect(finishStep(startStep(emptyMap(), both!, 0), both!, false, 1).stages.push.status).toBe('done')
   })
 
   test('команды чтения — подготовка контекста', () => {

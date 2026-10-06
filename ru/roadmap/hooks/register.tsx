@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
 import type { PastTask, PlanItem, Project, Roadmap, Stage, StageId, StageStatus } from '../types'
 
@@ -22,13 +22,25 @@ const RESULT_STAGES: StageId[] = ['check', 'test', 'push', 'deploy']
 const GREEN = '#3fb950'
 const BLUE = '#58a6ff'
 const RED = '#f85149'
+const PURPLE = '#bc8cff'
 const GRAY = '#8b949e'
-const TRACK = '#8b949e55'
 
 const HISTORY_LIMIT = 8
 
 /** Высота строки текста на десктопе, в пикселях: по ней значки встают вровень с текстом. */
 const LINE_PX = 20
+
+/** Отступ строк карточки под текстом заголовка: значок и зазор. */
+const INDENT = 2
+
+/** Фон карточки секции на десктопе. */
+const CARD = '#8b949e14'
+
+/** Сколько шагов плана видно, пока план не развернули. */
+const PLAN_LIMIT = 5
+
+/** Сколько изменённых файлов видно в строке выполнения, пока не развернули. */
+const FILES_LIMIT = 3
 
 const emptyStage = (): Stage => ({ status: 'pending', count: 0, last: '', files: [] })
 
@@ -208,7 +220,10 @@ export const classify = (e: { tool: string; [key: string]: unknown }): Step | nu
     // Деплой и пуш — только по самим командам; тест и проверку можно узнать и по файлу в кавычках.
     const found = rules.find(([, re]) => re.test(bare)) ?? rules.slice(2).find(([, re]) => re.test(script))
     if (found) {
-      return { stage: found[0], last: describeCommand(command, found[1]) }
+      // В «git add && git commit && git push» подписью берём сам пуш, иначе этап считался бы «только коммитом».
+      const pattern = found[0] === 'push' && /\bgit\s+push\b/i.test(bare) ? /\bgit\s+push\b/i : found[1]
+
+      return { stage: found[0], last: describeCommand(command, pattern) }
     }
 
     const segments = commandSegments(bare)
@@ -475,46 +490,95 @@ const MARKS: Record<Mark, { glyph: string; color?: string; alt: string }> = {
 
 const PLAN_MARK: Record<PlanItem['status'], Mark> = { completed: 'done', in_progress: 'active', pending: 'pending' }
 
-/** Значок шага в духе GitHub Actions, для десктопа. */
-const iconSvg = (mark: Mark, size: number) => {
+/** Линия ленты этапов: `passed` — работа уже прошла этот отрезок, `ahead` — ещё впереди. */
+type Rail = 'passed' | 'ahead'
+
+const railPath = (from: number, to: number, rail: Rail) =>
+  `<path d="M8 ${from}V${to}" stroke="${rail === 'passed' ? GREEN : GRAY}" ` +
+  `stroke-opacity="${rail === 'passed' ? '.6' : '.35'}" stroke-width="1.5"/>`
+
+/**
+ * Значок шага в духе GitHub Actions, для десктопа: кружок `size` пикселей по
+ * центру строки. `rails` — линия ленты над и под кружком, до краёв строки:
+ * у соседних строк она смыкается в одну вертикаль.
+ */
+const iconSvg = (mark: Mark, size: number, rails: { top?: Rail; bottom?: Rail } = {}) => {
   const body: Record<Mark, string> = {
     done:
-      `<circle cx="8" cy="8" r="8" fill="${GREEN}"/>` +
-      `<path d="M4.6 8.3l2.2 2.2 4.6-4.8" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>`,
-    active: `<circle cx="8" cy="8" r="6.6" fill="none" stroke="${BLUE}" stroke-width="2"/><circle cx="8" cy="8" r="3" fill="${BLUE}"/>`,
+      `<circle cx="8" cy="8" r="6.5" fill="${GREEN}"/>` +
+      `<path d="M5.2 8.2l1.9 1.9 3.8-4" fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>`,
+    active: `<circle cx="8" cy="8" r="5.6" fill="none" stroke="${BLUE}" stroke-width="1.8"/><circle cx="8" cy="8" r="2.6" fill="${BLUE}"/>`,
     failed:
-      `<circle cx="8" cy="8" r="8" fill="${RED}"/>` +
-      `<path d="M5.5 5.5l5 5M10.5 5.5l-5 5" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/>`,
-    pending: `<circle cx="8" cy="8" r="6.6" fill="none" stroke="${GRAY}" stroke-opacity=".7" stroke-width="1.6"/>`,
+      `<circle cx="8" cy="8" r="6.5" fill="${RED}"/>` +
+      `<path d="M5.8 5.8l4.4 4.4M10.2 5.8l-4.4 4.4" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/>`,
+    pending: `<circle cx="8" cy="8" r="5.7" fill="none" stroke="${GRAY}" stroke-opacity=".7" stroke-width="1.6"/>`,
     skipped:
-      `<circle cx="8" cy="8" r="6.6" fill="none" stroke="${GRAY}" stroke-opacity=".5" stroke-width="1.6"/>` +
+      `<circle cx="8" cy="8" r="5.7" fill="none" stroke="${GRAY}" stroke-opacity=".5" stroke-width="1.6"/>` +
       `<path d="M5.5 8h5" stroke="${GRAY}" stroke-opacity=".7" stroke-width="1.6" stroke-linecap="round"/>`,
   }
 
-  // Кружок `size` пикселей в рамке высотой в строку текста — стоит ровно по центру строки.
+  // Рамка высотой в строку текста, в единицах значка (16 единиц = `size` пикселей).
   const unitsHigh = (LINE_PX * 16) / size
+  const top = (16 - unitsHigh) / 2
+  // Кружок — от 1.5 до 14.5; линия не доходит до него на единицу.
+  const lines = (rails.top ? railPath(top, 0.5, rails.top) : '') + (rails.bottom ? railPath(15.5, top + unitsHigh, rails.bottom) : '')
 
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${LINE_PX}" ` +
-    `viewBox="0 ${(16 - unitsHigh) / 2} 16 ${unitsHigh}">${body[mark]}</svg>`
+    `viewBox="0 ${top} 16 ${unitsHigh}">${lines}${body[mark]}</svg>`
   )
 }
 
-const progressSvg = (part: number, width: number) => {
-  const fill = Math.round(width * Math.max(0, Math.min(1, part)))
+/** Отрезок ленты под строкой пояснения этапа; без `rail` — пустое место той же ширины. */
+const railSvg = (rail?: Rail) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="${LINE_PX}" viewBox="0 -2 16 ${LINE_PX}">` +
+  (rail ? railPath(-2, 18, rail) : '') +
+  `</svg>`
 
-  return (
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="6" viewBox="0 0 ${width} 6">` +
-    `<rect width="${width}" height="6" rx="3" fill="${TRACK}"/>` +
-    (fill > 0 ? `<rect width="${Math.max(fill, 6)}" height="6" rx="3" fill="${GREEN}"/>` : '') +
-    `</svg>`
-  )
+/** Как выглядит заголовок секции: название, цвет, значок в терминале (`glyph`) и на десктопе (`icon`, сетка 16×16, C — цвет). */
+type Look = { title: string; color: string; glyph: string; icon: string }
+
+const LOOKS: Record<'stages' | 'plan' | 'past', Look> = {
+  stages: {
+    title: 'ЭТАПЫ',
+    color: BLUE,
+    glyph: '◉',
+    icon:
+      '<path d="M8 4.5V11.5" stroke="C" stroke-width="1.4" stroke-opacity=".6"/>' +
+      '<circle cx="8" cy="3" r="2.1" fill="C"/><circle cx="8" cy="8" r="2.1" fill="C"/>' +
+      '<circle cx="8" cy="13" r="1.9" fill="none" stroke="C" stroke-width="1.4"/>',
+  },
+  plan: {
+    title: 'ПЛАН',
+    color: PURPLE,
+    glyph: '☰',
+    icon:
+      '<path d="M2.2 4.6l1.6 1.6 2.6-3" fill="none" stroke="C" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>' +
+      '<circle cx="4.3" cy="11.5" r="1.9" fill="none" stroke="C" stroke-width="1.4"/>' +
+      '<path d="M8.6 4.5H14M8.6 11.5H14" stroke="C" stroke-width="1.6" stroke-linecap="round"/>',
+  },
+  past: {
+    title: 'РАНЕЕ',
+    color: GRAY,
+    glyph: '◷',
+    icon:
+      '<path d="M2 8a6 6 0 1 0 6-6 6.5 6.5 0 0 0-4.5 1.8L2 5.3" fill="none" stroke="C" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>' +
+      '<path d="M2 2v3.3h3.3" fill="none" stroke="C" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>' +
+      '<path d="M8 4.8V8l2.4 1.3" fill="none" stroke="C" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>',
+  },
 }
 
-type Line = { text: string; color?: string; isDim?: boolean; mark?: Mark }
+/** Значок заголовка секции, 12 пикселей в рамке высотой в строку текста. */
+const sectionSvg = (look: Look) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="${LINE_PX}" viewBox="0 ${(16 - (LINE_PX * 16) / 12) / 2} 16 ${(LINE_PX * 16) / 12}">` +
+  look.icon.replace(/"C"/g, `"${look.color}"`) +
+  `</svg>`
 
-const stageLines = (id: StageId, stage: Stage, plan: PlanItem[], isSkipped: boolean, detailed: boolean, narrow: boolean): Line[] => {
-  if (isSkipped || (stage.status === 'pending' && !(id === 'work' && plan.length > 0))) {
+/** Строка пояснения под этапом: приглушённая, если не задан цвет. */
+type Line = { text: string; color?: string }
+
+const stageLines = (id: StageId, stage: Stage, isSkipped: boolean, detailed: boolean, narrow: boolean): Line[] => {
+  if (isSkipped || stage.status === 'pending') {
     return []
   }
 
@@ -526,40 +590,26 @@ const stageLines = (id: StageId, stage: Stage, plan: PlanItem[], isSkipped: bool
       text: files
         ? `прочитано ${files} ${plural(files, 'файл', 'файла', 'файлов')} · ${stage.count} ${plural(stage.count, 'действие', 'действия', 'действий')}`
         : `${stage.count} ${plural(stage.count, 'действие', 'действия', 'действий')} · ${stage.last}`,
-      isDim: true,
     })
   }
 
   if (id === 'work') {
-    if (stage.files.length > 0) {
-      const names = detailed ? stage.files.join(', ') : stage.files.slice(-3).join(', ')
-      const more = !detailed && stage.files.length > 3 ? ` +${stage.files.length - 3}` : ''
-      lines.push({ text: `${stage.files.length} ${plural(stage.files.length, 'файл', 'файла', 'файлов')}: ${names}${more}`, isDim: true })
+    const files = stage.files
+    const count = `${files.length} ${plural(files.length, 'файл', 'файла', 'файлов')}`
+    if (files.length > FILES_LIMIT && detailed) {
+      // Подробно — каждый файл своей строкой.
+      lines.push({ text: `${count}:` }, ...files.map(name => ({ text: name })))
+    } else if (files.length > 0) {
+      const more = files.length > FILES_LIMIT ? ` +${files.length - FILES_LIMIT}` : ''
+      lines.push({ text: `${count}: ${files.slice(-FILES_LIMIT).join(', ')}${more}` })
     } else if (stage.count > 0) {
-      lines.push({ text: stage.last, isDim: true })
-    }
-
-    if (plan.length > 0 && !narrow) {
-      const limit = detailed ? plan.length : 5
-      const firstOpen = plan.findIndex(item => item.status !== 'completed')
-      const start = Math.max(0, Math.min(firstOpen === -1 ? plan.length : firstOpen, plan.length - limit))
-      if (start > 0) {
-        lines.push({ text: `ещё ${start} ${plural(start, 'шаг', 'шага', 'шагов')} выполнено`, isDim: true, mark: 'done' })
-      }
-      for (const item of plan.slice(start, start + limit)) {
-        lines.push({ text: item.title, mark: PLAN_MARK[item.status], isDim: item.status === 'completed' })
-      }
-      if (start + limit < plan.length) {
-        lines.push({ text: `и ещё ${plan.length - start - limit}`, isDim: true })
-      }
+      lines.push({ text: stage.last })
     }
   }
 
   if (RESULT_STAGES.includes(id)) {
     const runs = stage.count > 1 ? ` · ${stage.count} ${plural(stage.count, 'запуск', 'запуска', 'запусков')}` : ''
-    lines.push(
-      stage.status === 'failed' ? { text: `${stage.last} — ошибка${runs}`, color: RED } : { text: `${stage.last}${runs}`, isDim: true },
-    )
+    lines.push(stage.status === 'failed' ? { text: `${stage.last} — ошибка${runs}`, color: RED } : { text: `${stage.last}${runs}` })
   }
 
   return narrow ? lines.slice(0, 1) : lines
@@ -579,15 +629,20 @@ const timeLabel = (stage: Stage, now: number) => {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
+    // Имя занято другим плагином — команды не будет, но остальной старт сессии должен пройти.
     await $.command.register({
       name: 'roadmap',
       description: 'Открыть дорожную карту (`/roadmap reset` — новая задача, `/roadmap band` — под чат, `/roadmap pane` — в панель)',
+    }).catch(() => undefined)
+    // Раз в 30 с — чтобы время текущего шага шло; пока Claude не работает, время стоит и перерисовка не нужна.
+    $.clock.every(30_000, async () => {
+      if (await read($, isWorking)) {
+        $.ui.invalidate('ui.render')
+      }
     })
-    // Раз в 30 с — чтобы время текущего шага шло.
-    $.clock.every(30_000, () => $.ui.invalidate('ui.render'))
     await refreshProject($).catch(() => undefined)
     if ((await read($, placement)) === 'pane') {
-      void $.ui.open({ id: PANE, title: TITLE })
+      void $.ui.open({ id: PANE, title: TITLE }).catch(() => undefined)
     }
 
     return next(e)
@@ -698,153 +753,222 @@ export const register: Register = on => {
     const detailed = await read($, isDetailed)
     const past = (await read($, history)).filter(item => !isServiceText(item.task))
     const showPast = await read($, isHistoryOpen)
-    const status = taskStatus(current, found, await read($, isWorking))
+    const working = await read($, isWorking)
+    const status = taskStatus(current, found, working)
     const now = await $.clock.now()
 
-    const columns = e.props.bodyColumns
-    const narrow = columns < 36
-    // Ширина текста рядом со значком. Тексты режем заранее: длинная строка с обрезкой
-    // на десктопе всё равно занимает высоту, как если бы переносилась.
-    const room = Math.max(16, columns - 4)
     const stages = visibleStages(current, found)
     const lastStarted = stages.reduce((at, { id }, index) => (current.stages[id].status === 'pending' ? at : index), -1)
     const doneCount = stages.filter(({ id }) => current.stages[id].status === 'done').length
     const total = current.startedAt === undefined ? '' : formatDuration(now - current.startedAt)
-    const barCells = Math.max(8, Math.min(24, columns - 12))
-    const filledCells = Math.round((barCells * doneCount) / Math.max(1, stages.length))
+    const plan = current.plan
+
+    // Все тексты режем заранее под ширину: на десктопе перенос или обрезка
+    // всё равно занимают лишнюю высоту.
+    const columns = e.props.bodyColumns
+    const narrow = columns < 36
+    /** Ширина строки внутри карточки: на десктопе минус её поля. */
+    const inner = columns - (Svg ? 2 : 0)
+    /** Ячеек под значок строки с зазором: на десктопе значок шире символа. */
+    const iconW = Svg ? 3 : 2
 
     // Значок: на десктопе SVG высотой в строку текста, в терминале — цветной символ.
-    const icon = (mark: Mark, isSmall = false) =>
+    const icon = (mark: Mark, size: 12 | 16, rails?: { top?: Rail; bottom?: Rail }) =>
       Svg ? (
-        <Svg source={iconSvg(mark, isSmall ? 12 : 16)} alt={MARKS[mark].alt} width={isSmall ? 12 : 16} height={LINE_PX} />
+        <Svg source={iconSvg(mark, size, rails)} alt={MARKS[mark].alt} width={size} height={LINE_PX} />
       ) : (
         <Text color={MARKS[mark].color} dimColor={!MARKS[mark].color} bold>
           {MARKS[mark].glyph}
         </Text>
       )
 
-    return (
-      <Box flexDirection="column">
-        <Box key="head" flexDirection="column" marginBottom={1}>
-          <Box key="head-row" flexDirection="row" justifyContent="space-between">
-            <Text dimColor bold>
-              ЗАДАЧА
+    const mark = (look: Look) =>
+      Svg ? <Svg source={sectionSvg(look)} alt="значок" width={12} height={LINE_PX} /> : <Text color={look.color}>{look.glyph}</Text>
+
+    /** Тихая кнопка под строками карточки: «Ещё N», «Свернуть», «Показать». */
+    const more = (key: string, label: string, onPress: () => unknown) => (
+      <Box key={`${key}-row`} flexDirection="row" paddingLeft={INDENT}>
+        <Button key={key} plain dimColor label={label} onPress={onPress} />
+      </Box>
+    )
+
+    /** Секция-карточка: значок и название цветом секции, сводка справа, строки под названием. */
+    const section = (id: string, look: Look, note: string, rows: RenderChildren[]) => (
+      <Box
+        key={`section-${id}`}
+        flexDirection="column"
+        marginTop={1}
+        {...(Svg ? { backgroundColor: CARD, paddingX: 1, paddingY: 1 } : {})}
+      >
+        <Box key={`section-${id}-head`} flexDirection="row" justifyContent="space-between" alignItems="center" columnGap={1}>
+          <Box key={`section-${id}-title`} flexDirection="row" alignItems="center" columnGap={1}>
+            {mark(look)}
+            <Text bold color={look.color}>
+              {look.title}
             </Text>
-            {status ? (
-              <Box key="status" flexDirection="row" alignItems="center" columnGap={1}>
-                {icon(status.mark, true)}
-                <Text color={status.color}>{status.text}</Text>
-                {total ? <Text dimColor>· {total}</Text> : null}
-              </Box>
+          </Box>
+          <Text dimColor>{note}</Text>
+        </Box>
+        {rows}
+      </Box>
+    )
+
+    const toggleDetails = () => update($, isDetailed, value => !value)
+
+    // ── Шапка: задача, под ней статус; справа — тихие кнопки (на десктопе родная кнопка ≈ 5 ячеек).
+
+    const headRoom = Math.max(8, columns - (Svg ? 11 : 3) - 1)
+    const position = working && lastStarted >= 0 ? `этап ${lastStarted + 1} из ${stages.length}` : ''
+    const statusLine = status ? [status.text, position, total].filter(Boolean).join(' · ') : ''
+
+    const head = (
+      <Box key="head" flexDirection="row" justifyContent="space-between" alignItems="flex-start" columnGap={1}>
+        <Box key="head-text" flexDirection="column">
+          {current.task ? (
+            <Text bold>{short(current.task, headRoom)}</Text>
+          ) : (
+            <Text dimColor>{short('Появится с вашим следующим запросом', headRoom)}</Text>
+          )}
+          {statusLine ? <Text dimColor>{short(statusLine, headRoom)}</Text> : null}
+        </Box>
+        <Box key="toolbar" flexDirection="row" columnGap={1} flexShrink={0}>
+          <Button key="reset" plain dimColor label="↺" onPress={() => startNewTask($, '')} />
+          <Button key="to-band" plain dimColor label="⤓" onPress={() => moveTo($, 'band')} />
+        </Box>
+      </Box>
+    )
+
+    // ── Этапы: лента сверху вниз, без зазоров — на десктопе линия значков смыкается.
+
+    const workFiles = current.stages.work.files.length
+    const isPlanLong = plan.length > PLAN_LIMIT
+    const isFilesLong = !narrow && workFiles > FILES_LIMIT
+    // На десктопе у строк этапа поле справа: время не прилипает к краю подсветки.
+    const stageRoom = Math.max(8, inner - INDENT - (Svg ? 1 : 0) - iconW)
+
+    const stageRows = stages.map(({ id, title }, index) => {
+      const stage = current.stages[id]
+      const isSkipped = stage.status === 'pending' && index < lastStarted
+      const stageMark: Mark = isSkipped ? 'skipped' : stage.status
+      const lines = stageLines(id, stage, isSkipped, detailed, narrow)
+      const time = narrow ? '' : timeLabel(stage, now)
+      const heading = `${title}${isSkipped ? ' · пропущено' : ''}`
+      // Отрезок ленты пройден, если работа уже дошла до этапа под ним.
+      const rails: { top?: Rail; bottom?: Rail } = {
+        top: index > 0 ? (index <= lastStarted ? 'passed' : 'ahead') : undefined,
+        bottom: index < stages.length - 1 ? (index < lastStarted ? 'passed' : 'ahead') : undefined,
+      }
+      const tint = stage.status === 'active' ? BLUE : stage.status === 'failed' ? RED : undefined
+
+      return (
+        <Box
+          key={`stage-${id}`}
+          flexDirection="column"
+          paddingLeft={INDENT}
+          {...(Svg ? { paddingRight: 1 } : {})}
+          {...(Svg && tint ? { backgroundColor: `${tint}1a` } : {})}
+        >
+          <Box key={`stage-${id}-head`} flexDirection="row" justifyContent="space-between" alignItems="center" columnGap={1}>
+            <Box key={`stage-${id}-title`} flexDirection="row" alignItems="center" columnGap={1}>
+              {icon(stageMark, 16, rails)}
+              <Text bold={stage.status === 'active'} dimColor={stage.status === 'pending'}>
+                {short(heading, stageRoom - (time ? time.length + 1 : 0))}
+              </Text>
+            </Box>
+            {time ? (
+              <Text color={stage.status === 'active' ? BLUE : undefined} dimColor={stage.status !== 'active'}>
+                {time}
+              </Text>
             ) : null}
           </Box>
-          <Text bold={Boolean(current.task)} dimColor={!current.task} wrap="wrap">
-            {current.task || 'Появится с вашим следующим запросом'}
-          </Text>
-          <Box key="progress" flexDirection="row" alignItems="center" columnGap={1}>
-            {Svg ? (
-              <Svg
-                source={progressSvg(doneCount / Math.max(1, stages.length), 120)}
-                alt={`${doneCount} из ${stages.length}`}
-                width={120}
-                height={6}
-              />
-            ) : (
-              <Box key="bar" flexDirection="row">
-                <Text color={GREEN}>{'━'.repeat(filledCells)}</Text>
-                <Text dimColor>{'─'.repeat(barCells - filledCells)}</Text>
+          {lines.map((line, i) => (
+            // Пояснение — под названием этапа; на десктопе слева продолжается линия ленты.
+            <Box key={`stage-${id}-line-${i}`} flexDirection="row" alignItems="center" columnGap={1} paddingLeft={Svg ? 0 : 2}>
+              {Svg ? <Svg source={railSvg(rails.bottom)} alt="" width={16} height={LINE_PX} /> : null}
+              <Text color={line.color} dimColor={!line.color}>
+                {short(line.text, stageRoom)}
+              </Text>
+            </Box>
+          ))}
+        </Box>
+      )
+    })
+
+    // Кнопка «подробно» одна: у длинного плана, иначе — у длинного списка файлов.
+    const stagesFooter =
+      isFilesLong && !isPlanLong
+        ? more(
+            'details',
+            detailed ? 'Свернуть' : `Ещё ${workFiles - FILES_LIMIT} ${plural(workFiles - FILES_LIMIT, 'файл', 'файла', 'файлов')}`,
+            toggleDetails,
+          )
+        : null
+
+    // ── План Claude: окно вокруг текущего шага, выполненное до него — одной строкой.
+
+    const planDone = plan.filter(item => item.status === 'completed').length
+    const firstOpen = plan.findIndex(item => item.status !== 'completed')
+    const planStart =
+      detailed || !isPlanLong ? 0 : Math.max(0, Math.min(firstOpen === -1 ? plan.length : firstOpen, plan.length - PLAN_LIMIT))
+    const planShown = detailed || !isPlanLong ? plan : plan.slice(planStart, planStart + PLAN_LIMIT)
+    const planRoom = Math.max(8, inner - INDENT - iconW)
+
+    const planRow = (key: string, rowMark: Mark, text: string, isActive: boolean) => (
+      <Box
+        key={key}
+        flexDirection="row"
+        alignItems="center"
+        columnGap={1}
+        paddingLeft={INDENT}
+        {...(Svg && isActive ? { backgroundColor: `${BLUE}1a` } : {})}
+      >
+        {icon(rowMark, 12)}
+        <Text dimColor={rowMark === 'done'}>{short(text, planRoom)}</Text>
+      </Box>
+    )
+
+    const planRows = [
+      planStart > 0 ? planRow('plan-done', 'done', `${planStart} ${plural(planStart, 'шаг', 'шага', 'шагов')} выполнено`, false) : null,
+      ...planShown.map((item, index) =>
+        planRow(`plan-${planStart + index}`, PLAN_MARK[item.status], item.title, item.status === 'in_progress'),
+      ),
+      isPlanLong ? more('details', detailed ? 'Свернуть' : `Ещё ${plan.length - planShown.length}`, toggleDetails) : null,
+    ]
+
+    // ── Ранее: свёрнуто, пока не попросят.
+
+    const pastRows = showPast
+      ? past.map((item, index) => {
+          const time = narrow ? '' : formatDuration(item.durationMs)
+
+          return (
+            <Box key={`past-${index}`} flexDirection="row" justifyContent="space-between" alignItems="center" columnGap={1} paddingLeft={INDENT}>
+              <Box key={`past-${index}-name`} flexDirection="row" alignItems="center" columnGap={1}>
+                {icon(item.isFailed ? 'failed' : item.done === item.total ? 'done' : 'skipped', 12)}
+                <Text>{short(item.task, Math.max(8, inner - INDENT - iconW - (time ? time.length + 1 : 0)))}</Text>
               </Box>
-            )}
-            <Text dimColor>
-              {doneCount} из {stages.length}
-            </Text>
-          </Box>
-        </Box>
+              {time ? <Text dimColor>{time}</Text> : null}
+            </Box>
+          )
+        })
+      : []
 
-        <Box key="steps" flexDirection="column" rowGap={1}>
-          {stages.map(({ id, title }, index) => {
-            const stage = current.stages[id]
-            const isSkipped = stage.status === 'pending' && index < lastStarted
-            const mark: Mark = isSkipped ? 'skipped' : stage.status
-            const lines = stageLines(id, stage, current.plan, isSkipped, detailed, narrow)
-            const time = narrow ? '' : timeLabel(stage, now)
-            const heading = `${title}${isSkipped ? ' · пропущено' : ''}`
-
-            return (
-              <Box
-                key={id}
-                flexDirection="row"
-                columnGap={1}
-                {...(Svg && (stage.status === 'active' || stage.status === 'failed')
-                  ? { backgroundColor: stage.status === 'active' ? '#58a6ff1a' : '#f851491a', paddingX: 1 }
-                  : {})}
-              >
-                {icon(mark)}
-                <Box key={`${id}-body`} flexDirection="column" flexGrow={1} flexShrink={1}>
-                  <Box key={`${id}-head`} flexDirection="row" justifyContent="space-between" columnGap={1}>
-                    <Text bold={stage.status === 'active'} dimColor={stage.status === 'pending'}>
-                      {short(heading, room - time.length - 1)}
-                    </Text>
-                    {time ? (
-                      <Text color={stage.status === 'active' ? BLUE : undefined} dimColor={stage.status !== 'active'}>
-                        {time}
-                      </Text>
-                    ) : null}
-                  </Box>
-                  {lines.map(line =>
-                    line.mark ? (
-                      <Box flexDirection="row" columnGap={1}>
-                        {icon(line.mark, true)}
-                        <Text dimColor={line.isDim}>{short(line.text, room - 3)}</Text>
-                      </Box>
-                    ) : (
-                      <Text
-                        color={line.color ?? (stage.status === 'active' ? BLUE : undefined)}
-                        dimColor={line.isDim && stage.status !== 'active'}
-                      >
-                        {short(line.text, room)}
-                      </Text>
-                    ),
-                  )}
-                </Box>
-              </Box>
-            )
-          })}
-        </Box>
-
-        <Box key="actions" flexDirection="row" columnGap={1} marginTop={1}>
-          <Button key="details" label={detailed ? 'Кратко' : 'Подробно'} onPress={() => update($, isDetailed, value => !value)} />
-          <Button key="reset" label="Новая задача" onPress={() => startNewTask($, '')} />
-          <Button key="to-band" label="⬇ Под чат" onPress={() => moveTo($, 'band')} />
-        </Box>
-
-        {past.length === 0 ? null : (
-          <Box key="past" flexDirection="column" marginTop={1}>
-            <Button
-              key="toggle-past"
-              plain
-              dimColor
-              label={`${showPast ? '▾' : '▸'} Ранее · ${past.length}`}
-              onPress={() => update($, isHistoryOpen, value => !value)}
-            />
-            {showPast
-              ? past.map((item, index) => (
-                  <Box key={`past-${index}`} flexDirection="row" justifyContent="space-between" columnGap={1}>
-                    <Box key={`past-${index}-name`} flexDirection="row" columnGap={1}>
-                      {icon(item.isFailed ? 'failed' : item.done === item.total ? 'done' : 'skipped', true)}
-                      <Text dimColor>{short(item.task, room - (narrow ? 3 : 10))}</Text>
-                    </Box>
-                    {narrow ? null : <Text dimColor>{formatDuration(item.durationMs)}</Text>}
-                  </Box>
-                ))
-              : null}
-          </Box>
-        )}
+    return (
+      <Box flexDirection="column">
+        {head}
+        {section('stages', LOOKS.stages, `${doneCount}/${stages.length}`, [...stageRows, stagesFooter])}
+        {plan.length > 0 ? section('plan', LOOKS.plan, `${planDone}/${plan.length}`, planRows) : null}
+        {past.length > 0
+          ? section('past', LOOKS.past, String(past.length), [
+              ...pastRows,
+              more('toggle-past', showPast ? 'Свернуть' : `Показать ${past.length}`, () => update($, isHistoryOpen, value => !value)),
+            ])
+          : null}
       </Box>
     )
   })
 
-  // Карта «под чатом»: две строки над полем ввода — задача и цепочка этапов.
+  // Карта «под чатом»: одна аккуратная строка — задача, ступени этапов через линию, время и ⤢.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const others = await next(e)
     if (e.props.hasSurvey || (await read($, placement)) !== 'band') {
@@ -865,7 +989,6 @@ export const register: Register = on => {
     const stages = visibleStages(current, found)
     const lastStarted = stages.reduce((at, { id }, index) => (current.stages[id].status === 'pending' ? at : index), -1)
     const total = current.startedAt === undefined ? '' : formatDuration(now - current.startedAt)
-    const room = Math.max(16, e.props.bodyColumns - 4)
 
     const icon = (mark: Mark) =>
       Svg ? (
@@ -876,43 +999,65 @@ export const register: Register = on => {
         </Text>
       )
 
-    const right = [status?.text, total].filter(Boolean).join(' · ')
+    const steps = stages.map(({ id }, index) => {
+      const stage = current.stages[id]
+      const isSkipped = stage.status === 'pending' && index < lastStarted
+      const mark: Mark = isSkipped ? 'skipped' : stage.status
+      const time = stage.status === 'active' ? timeLabel(stage, now) : ''
+      // Идущий этап и ошибка — с названием даже в сжатой цепочке.
+      const isLoud = stage.status === 'active' || stage.status === 'failed'
+
+      // Линия к этапу зелёная, если работа уже дошла до него — как лента в панели.
+      return { id, mark, stage, isSkipped, isLoud, label: `${SHORT_TITLES[id]}${time ? ` ${time}` : ''}`, isPassed: index <= lastStarted }
+    })
+
+    // Всё — в одну строку без переноса: если цепочка этапов не влезает рядом с задачей,
+    // у пройденных и будущих этапов остаются одни значки, а в совсем узкой полосе цепочки нет.
+    const iconW = Svg ? 2 : 1
+    const chainWidth = (isCompact: boolean) =>
+      steps.reduce(
+        (sum, step, index) =>
+          sum + (index > 0 ? (isCompact ? 1 : 2) + 2 : 0) + iconW + (!isCompact || step.isLoud ? step.label.length + 1 : 0),
+        0,
+      )
+    const rightW = (total ? total.length + 1 : 0) + (Svg ? 5 : 1)
+    const free = e.props.bodyColumns - rightW - (status ? iconW + 1 : 0) - 2
+    const chain = chainWidth(false) + 2 <= free - 16 ? 'full' : chainWidth(true) + 2 <= free - 16 ? 'compact' : 'none'
+    const room = Math.max(8, free - (chain === 'none' ? 0 : chainWidth(chain === 'compact') + 2))
 
     return (
       <Box flexDirection="column">
-        <Box key="roadmap-band" flexDirection="column">
-          <Box key="roadmap-band-top" flexDirection="row" justifyContent="space-between" columnGap={1}>
-            <Box key="roadmap-band-task" flexDirection="row" alignItems="center" columnGap={1}>
-              {status ? icon(status.mark) : null}
-              <Text bold>{short(current.task || 'Задача', room - right.length - 12)}</Text>
-            </Box>
-            <Box key="roadmap-band-right" flexDirection="row" alignItems="center" columnGap={1}>
-              {right ? <Text color={status?.color} dimColor={!status}>{right}</Text> : null}
-              <Button key="to-pane" plain dimColor label="⤢ Панель" onPress={() => moveTo($, 'pane')} />
-            </Box>
+        <Box key="roadmap-band" flexDirection="row" alignItems="center" justifyContent="space-between" columnGap={2} marginBottom={1}>
+          <Box key="roadmap-band-task" flexDirection="row" alignItems="center" columnGap={1}>
+            {status ? icon(status.mark) : null}
+            <Text bold>{short(current.task || 'Задача', room)}</Text>
           </Box>
-          <Box key="roadmap-band-steps" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={1}>
-            {stages.map(({ id }, index) => {
-              const stage = current.stages[id]
-              const isSkipped = stage.status === 'pending' && index < lastStarted
-              const mark: Mark = isSkipped ? 'skipped' : stage.status
-              const time = stage.status === 'active' ? timeLabel(stage, now) : ''
-
-              return (
-                <Box key={`band-${id}`} flexDirection="row" alignItems="center" columnGap={1}>
-                  {index > 0 ? <Text dimColor>›</Text> : null}
-                  {icon(mark)}
-                  <Text
-                    bold={stage.status === 'active'}
-                    color={stage.status === 'active' ? BLUE : stage.status === 'failed' ? RED : undefined}
-                    dimColor={stage.status === 'pending' || isSkipped}
-                  >
-                    {SHORT_TITLES[id]}
-                    {time ? ` ${time}` : ''}
-                  </Text>
+          {chain === 'none' ? null : (
+            <Box key="roadmap-band-steps" flexDirection="row" alignItems="center" columnGap={1}>
+              {steps.map((step, index) => (
+                <Box key={`band-${step.id}`} flexDirection="row" alignItems="center" columnGap={1}>
+                  {index > 0 ? (
+                    <Text color={step.isPassed ? GREEN : undefined} dimColor={!step.isPassed}>
+                      {chain === 'compact' ? '─' : '──'}
+                    </Text>
+                  ) : null}
+                  {icon(step.mark)}
+                  {chain === 'full' || step.isLoud ? (
+                    <Text
+                      bold={step.stage.status === 'active'}
+                      color={step.stage.status === 'active' ? BLUE : step.stage.status === 'failed' ? RED : undefined}
+                      dimColor={step.stage.status === 'pending' || step.isSkipped}
+                    >
+                      {step.label}
+                    </Text>
+                  ) : null}
                 </Box>
-              )
-            })}
+              ))}
+            </Box>
+          )}
+          <Box key="roadmap-band-right" flexDirection="row" alignItems="center" columnGap={1}>
+            {total ? <Text dimColor>{total}</Text> : null}
+            <Button key="to-pane" plain dimColor label="⤢" onPress={() => moveTo($, 'pane')} />
           </Box>
         </Box>
         {others}

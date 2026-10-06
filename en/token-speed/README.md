@@ -1,5 +1,7 @@
 # ⚡ token-speed — model response speed
 
+> **Superseded.** The same speed (live and per turn, with the step chart) is now the SPEED column of [usage-band](../usage-band). Don't install both: you'd see the speed twice. This mod stays for those who want the speed alone in the status line.
+
 The response speed in tokens per second, in the status line under the prompt.
 
 ```
@@ -18,4 +20,4 @@ If the model thinks for a long time and its thinking text isn't streamed, the li
 
 **No commands.** **Reads** only the model's response stream. **Runs nothing** and makes no network calls.
 
-Installation: see the [main README](../../README.md#install).
+Installation: see the [main README](../../README.md#installation).

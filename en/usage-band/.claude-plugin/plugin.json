@@ -1,10 +1,11 @@
 {
   "name": "usage-band",
-  "version": "0.1.0",
-  "description": "Band above the prompt: context fill, memory files and subscription limit usage (5h / 7d)",
+  "version": "0.3.0",
+  "description": "Band above the prompt: context fill, memory files, subscription limits (5h and week), model response speed and a prompt-cache timer",
   "author": {
     "name": "Zulut30",
     "url": "https://github.com/Zulut30"
   },
-  "homepage": "https://github.com/Zulut30/claude-mode"
+  "homepage": "https://github.com/Zulut30/claude-mode",
+  "types": "./types/index.d.ts"
 }

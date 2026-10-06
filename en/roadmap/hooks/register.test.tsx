@@ -118,9 +118,9 @@ describe('adaptivity', () => {
   })
 
   test('duration', () => {
-    expect(formatDuration(30_000)).toBe('<1m')
-    expect(formatDuration(5 * 60_000)).toBe('5m')
-    expect(formatDuration(65 * 60_000)).toBe('1h 5m')
+    expect(formatDuration(30_000)).toBe('<1 min')
+    expect(formatDuration(5 * 60_000)).toBe('5 min')
+    expect(formatDuration(65 * 60_000)).toBe('1 hr 5 min')
   })
 })
 
@@ -138,10 +138,19 @@ describe('new tasks and labels', () => {
 
   test('"yes / go ahead" continues the task, anything else starts a new one', () => {
     expect(isContinuation('go ahead')).toBe(true)
-    expect(isContinuation('go ahead, but be careful')).toBe(true)
+    expect(isContinuation('go ahead, just be careful')).toBe(true)
     expect(isContinuation('Yes, continue')).toBe(true)
-    expect(isContinuation('remove the buttons from this panel')).toBe(false)
+    expect(isContinuation('ok')).toBe(true)
+    expect(isContinuation('Sounds good!')).toBe(true)
+    expect(isContinuation('go!')).toBe(true)
+    expect(isContinuation('keep going')).toBe(true)
+    expect(isContinuation('remove the buttons from this pane and roll it back')).toBe(false)
     expect(isContinuation('the roadmap works badly')).toBe(false)
+    expect(isContinuation('go through the failing tests and fix them')).toBe(false)
+    expect(isContinuation("yesterday's build is broken")).toBe(false)
+    // Russian confirmations still work.
+    expect(isContinuation('давай')).toBe(true)
+    expect(isContinuation('Да, продолжай')).toBe(true)
   })
 
   test('task summary for "Earlier"', () => {
@@ -176,18 +185,18 @@ test('pane: stages, plan, a new task on a new prompt, "Earlier"', async ($, on) 
   })
   await call({ tool: 'Edit', file_path: 'C:/p/src/app.ts', old_string: 'a', new_string: 'b' })
   await call({ tool: 'Bash', command: 'X="C:/p"; cd "$X" && npm test' })
-  await $.prompt.submit(PROMPT('ok'))
+  await $.prompt.submit(PROMPT('go ahead'))
   await $.prompt.submit({ text: '<agent-message from="a1"> [Subagent hand-back] report', wait: false, origin: { kind: 'peer' } } as never)
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'roadmap', surface, ...PANE })
-    expect(await ui.find({ type: 'Text', text: 'build the login page' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: 'Claude is working' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /read 1 file/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: '1 file: app.ts' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: 'Draw the pane' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: 'npm test — failed' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: 'Push' })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /^build the login page$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^Claude is working · stage 3 of 3/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^read 1 file · / })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^1 file: app\.ts$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^Draw the pane$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^npm test — failed$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^Push/ })).toBeUndefined()
     if (surface === 'terminal') {
       expect((await ui.find({ type: 'Text', text: '✗' }))?.props.color).toBe('#f85149')
     } else {
@@ -199,28 +208,28 @@ test('pane: stages, plan, a new task on a new prompt, "Earlier"', async ($, on) 
   // A new prompt is a new task; the previous one moves to "Earlier".
   await $.prompt.submit(PROMPT('now add a dark theme'))
   const ui = await $.ui.mount({ plugin: 'roadmap', surface: 'desktop', ...PANE })
-  expect(await ui.find({ type: 'Text', text: 'now add a dark theme' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^now add a dark theme$/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /npm test/ })).toBeUndefined()
   await ui.press({ key: 'toggle-past' })
-  expect(await ui.find({ type: 'Text', text: 'build the login page' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^build the login page$/ })).toBeDefined()
 
   await ui.press({ key: 'reset' })
-  expect(await ui.find({ type: 'Text', text: 'Appears with your next request' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Appears with your next prompt$/ })).toBeDefined()
   await ui.unmount()
 })
 
 describe('accuracy', () => {
   test('agent messages and service inserts are not tasks', () => {
-    expect(isPersonPrompt('composer', 'make the pane')).toBe(true)
-    expect(isPersonPrompt('sdk', 'make the pane')).toBe(true)
-    expect(isPersonPrompt('peer', 'make the pane')).toBe(false)
+    expect(isPersonPrompt('composer', 'build a pane')).toBe(true)
+    expect(isPersonPrompt('sdk', 'build a pane')).toBe(true)
+    expect(isPersonPrompt('peer', 'build a pane')).toBe(false)
     expect(isPersonPrompt('composer', '<agent-message from="a1"> report')).toBe(false)
     expect(isPersonPrompt('composer', '/roadmap')).toBe(false)
   })
 
   test('the task title is the first line, no longer than ~90 characters', () => {
-    expect(taskTitle('make the pane\nand a second line too')).toBe('make the pane')
-    const long = taskTitle('make the tasks in this pane more adaptive and also make a mod similar to the git lens extension')
+    expect(taskTitle('build a pane\nand one more second line')).toBe('build a pane')
+    const long = taskTitle('make the tasks in this pane more adaptive and also build a mod that works like the GitLens extension')
     expect(long.length).toBeLessThanOrEqual(91)
     expect(long.endsWith('…')).toBe(true)
   })
@@ -231,6 +240,10 @@ describe('accuracy', () => {
     expect(classify({ tool: 'Bash', command: 'git commit -m "prepare deploy to vercel"' })?.stage).toBe('push')
     expect(classify({ tool: 'Bash', command: 'npx vercel --prod' })?.stage).toBe('deploy')
     expect(classify({ tool: 'Bash', command: 'npm run deploy' })?.stage).toBe('deploy')
+    // "git add && git commit && git push" is a push as a whole, not "commit only".
+    const both = classify({ tool: 'Bash', command: 'git add -A && git commit -m "x" && git push origin main' })
+    expect(both).toEqual({ stage: 'push', last: 'git push origin main' })
+    expect(finishStep(startStep(emptyMap(), both!, 0), both!, false, 1).stages.push.status).toBe('done')
   })
 
   test('read-only commands are context gathering', () => {
@@ -275,9 +288,9 @@ test('the roadmap moves under the chat and back; the neighbouring band stays', a
   await call({ tool: 'Read', file_path: 'C:/p/a.ts' })
   await call({ tool: 'Edit', file_path: 'C:/p/a.ts', old_string: 'a', new_string: 'b' })
 
-  // While the roadmap is in its pane, the band shows only the neighbour.
+  // While the roadmap is in the pane, the band shows only the neighbour.
   let band = await $.ui.mount({ plugin: 'roadmap', surface: 'desktop', ...BAND })
-  expect(await band.find({ type: 'Text', text: 'Implementation' })).toBeUndefined()
+  expect(await band.find({ type: 'Text', text: /^Implementation/ })).toBeUndefined()
   await band.unmount()
 
   const pane = await $.ui.mount({ plugin: 'roadmap', surface: 'desktop', ...PANE })
@@ -287,16 +300,16 @@ test('the roadmap moves under the chat and back; the neighbouring band stays', a
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const view = await $.ui.mount({ plugin: 'roadmap', surface, ...BAND })
-    expect(await view.find({ type: 'Text', text: 'build the login page' })).toBeDefined()
-    expect(await view.find({ type: 'Text', text: 'Context' })).toBeDefined()
+    expect(await view.find({ type: 'Text', text: /^build the login page$/ })).toBeDefined()
+    expect(await view.find({ type: 'Text', text: /^Context$/ })).toBeDefined()
     expect(await view.find({ type: 'Text', text: /^Implementation/ })).toBeDefined()
-    expect(await view.find({ type: 'Text', text: 'usage band' })).toBeDefined()
+    expect(await view.find({ type: 'Text', text: /^usage band$/ })).toBeDefined()
     await view.unmount()
   }
 
   band = await $.ui.mount({ plugin: 'roadmap', surface: 'desktop', ...BAND })
   await band.press({ key: 'to-pane' })
-  expect(await band.find({ type: 'Text', text: 'build the login page' })).toBeUndefined()
+  expect(await band.find({ type: 'Text', text: /^build the login page$/ })).toBeUndefined()
   await band.unmount()
   expect(panes.at(-1)).toBe('open:roadmap')
 

@@ -116,17 +116,46 @@ test('панель: ветки, PR, изменения, удалённые и к
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'git-branches', surface, ...PANE })
-    expect(await ui.find({ type: 'Text', text: 'acme/site' })).toBeDefined()
-    expect(await ui.find({ type: 'Link', text: 'открыть на GitHub' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: '↑2 не запушено' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: '✎ 1 изменено · 1 в индексе · 1 новый' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: '#12' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: 'нет на сервере' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: 'только локально' })).toBeDefined()
-    expect(await ui.find({ type: 'Link', text: 'Страница входа' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /проверки прошли · одобрено/ })).toBeDefined()
-    expect(await ui.find({ type: 'Link', text: 'origin/hotfix' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: '✓ рабочая копия чистая' })).toBeUndefined()
+
+    // Шапка: репозиторий текстом и текущая ветка, под ними плашки; справа две тихие кнопки.
+    expect(await ui.find({ type: 'Text', text: /^acme\/site$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Link', text: 'acme/site' })).toBeUndefined()
+    expect((await ui.find({ type: 'Button', key: 'refresh' }))?.text).toBe('↻')
+    expect((await ui.find({ type: 'Button', key: 'fetch' }))?.text).toBe('⇣')
+    expect(await ui.find({ type: 'Text', text: /^main$/ })).toBeDefined()
+    // На десктопе пометки — плашки с отступом по краям.
+    expect(await ui.find({ type: 'Text', text: /^\s?↑2 не запушено\s?$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^\s?✎ 3 изменения\s?$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^обновлено только что$/ })).toBeDefined()
+
+    // Ветки: текущая не повторяется, у остальных — пометки справа.
+    expect(await ui.find({ type: 'Text', text: /^ВЕТКИ$/ })).toBeDefined()
+    expect(await ui.find({ key: 'local-main' })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /^feature\/login$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^↓5$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^#12$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^удалена на сервере$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^локальная$/ })).toBeDefined()
+
+    // PR: ссылкой только номер.
+    expect(await ui.find({ type: 'Link', text: '#12' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^Страница входа$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^одобрено$/ })).toBeDefined()
+
+    // Коммиты.
+    expect(await ui.find({ type: 'Link', text: 'a1b2c3d' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^fix: шапка$/ })).toBeDefined()
+
+    // «На сервере» свёрнута, пока не нажмут «Показать N».
+    expect(await ui.find({ type: 'Text', text: /^НА СЕРВЕРЕ$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^hotfix$/ })).toBeUndefined()
+    expect((await ui.find({ key: 'more-remote' }))?.text).toBe('Показать 1')
+    await ui.press({ key: 'more-remote' })
+    expect(await ui.find({ type: 'Text', text: /^hotfix$/ })).toBeDefined()
+    expect((await ui.find({ key: 'more-remote' }))?.text).toBe('Свернуть')
+    await ui.press({ key: 'more-remote' })
+    expect(await ui.find({ type: 'Text', text: /^hotfix$/ })).toBeUndefined()
+
     await ui.unmount()
   }
 })
@@ -139,12 +168,45 @@ test('не git-папка — понятное сообщение', async ($, on
   const reply = await $.command.run({ command: 'branches', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
   expect(reply.text).toBe('Эта папка не git-репозиторий.')
 
-  const ui = await $.ui.mount({ plugin: 'git-branches', surface: 'desktop', ...PANE })
-  expect(await ui.find({ type: 'Text', text: 'Здесь нет git-репозитория' })).toBeDefined()
-  await ui.unmount()
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'git-branches', surface, ...PANE })
+    expect(await ui.find({ type: 'Text', text: /^Здесь нет git-репозитория$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'Откройте сессию в папке проекта с git' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'refresh' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'ВЕТКИ' })).toBeUndefined()
+    await ui.unmount()
+  }
 })
 
-test('длинный список: первые 5 веток и кнопка «Ещё N»', async ($, on) => {
+test('папка сессии не git, а проект лежит в подпапке — панель показывает его', async ($, on) => {
+  mock.clock(on, { now: NOW })
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('fs.list', () => ({
+    value: [
+      { name: '.cache', kind: 'dir', size: 0, mtimeMs: 0, isLink: false },
+      { name: 'notes.txt', kind: 'file', size: 1, mtimeMs: 0, isLink: false },
+      { name: 'site', kind: 'dir', size: 0, mtimeMs: 0, isLink: false },
+    ],
+  }))
+  // Движок отдаёт путь уже абсолютным.
+  on('fs.exists', (_, e) => ({ value: e.path.replace(/\\/g, '/').endsWith('/site/.git') }))
+  const dirs: (string | undefined)[] = []
+  on('process.run', (_, e) => {
+    dirs.push(e.init?.cwd)
+    if (e.init?.cwd !== 'site') {
+      return { value: { exitCode: 128, stdout: '', stderr: 'not a git repository', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
+
+    return ok(GIT[e.argv.join(' ')] ?? '')
+  })
+
+  const reply = await $.command.run({ command: 'branches', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
+  expect(reply.text).toBe('Ветки: 0, текущая main.')
+  expect(dirs[0]).toBeUndefined()
+  expect(dirs.slice(1).every(dir => dir === 'site')).toBe(true)
+})
+
+test('длинный список: первые 6 веток и кнопка «Ещё N»', async ($, on) => {
   mock.clock(on, { now: NOW })
   on('ui.open', () => ({ value: { isPlaced: true } }))
   const many = ['main\torigin/main\t\ta0\t' + T + '\tИван\tm']
@@ -160,11 +222,23 @@ test('длинный список: первые 5 веток и кнопка «�
   })
 
   await $.command.run({ command: 'branches', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
-  const ui = await $.ui.mount({ plugin: 'git-branches', surface: 'desktop', ...PANE })
-  expect(await ui.find({ type: 'Text', text: 'ВЕТКИ · 7' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: 'feat-4' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: 'feat-5' })).toBeUndefined()
-  await ui.press({ key: 'more-local' })
-  expect(await ui.find({ type: 'Text', text: 'feat-6' })).toBeDefined()
-  await ui.unmount()
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'git-branches', surface, ...PANE })
+    expect(await ui.find({ type: 'Text', text: /^ВЕТКИ$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^7$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^feat-5$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^feat-6$/ })).toBeUndefined()
+    expect((await ui.find({ key: 'more-local' }))?.text).toBe('Ещё 1')
+    // Коммитов нет — тихая строка вместо пустой карточки.
+    expect(await ui.find({ type: 'Text', text: /^Коммитов пока нет · открытых PR нет$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^КОММИТЫ$/ })).toBeUndefined()
+
+    await ui.press({ key: 'more-local' })
+    expect(await ui.find({ type: 'Text', text: /^feat-6$/ })).toBeDefined()
+    expect((await ui.find({ key: 'more-local' }))?.text).toBe('Свернуть')
+
+    await ui.press({ key: 'more-local' })
+    expect(await ui.find({ type: 'Text', text: /^feat-6$/ })).toBeUndefined()
+    await ui.unmount()
+  }
 })

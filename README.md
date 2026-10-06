@@ -1,170 +1,175 @@
 # claude-mode
 
-Five mods for **Claude Code** — the desktop app's Code tab and the terminal. Each mod is its own folder: install only the ones you want.
+Mods for **Claude Code**: the Code tab of the desktop app and the terminal. Each mod is its own folder — install only the ones you want.
 
 [Русская версия →](README.ru.md)
 
-| | Mod | What it gives you | Where it shows |
+| | Mod | What it gives you | Where |
 | --- | --- | --- | --- |
-| 📊 | [**usage-band**](en/usage-band) | Context window fill, loaded memory files and subscription limits (5-hour and weekly) | A band above the prompt |
-| 🗺️ | [**roadmap**](en/roadmap) | The stages of the current task: context → implementation → checks → tests → push → deploy | A **Roadmap** pane |
-| 🌿 | [**git-branches**](en/git-branches) | Branches, sync with the remote, GitHub pull requests and commits, GitLens-style | A **Branches** pane |
-| 🧭 | [**context-inspector**](en/context-inspector) | What fills the context window: categories, MCP servers, skills, memory and tips on what to free up | A **Context** pane |
-| ⚡ | [**token-speed**](en/token-speed) | The model's response speed in tokens per second | The status line under the prompt |
+| 📊 | [**usage-band**](en/usage-band) | Context fill, memory files, subscription limits (5 hours and week), response speed and a prompt-cache timer | Band above the prompt |
+| 🗺️ | [**roadmap**](en/roadmap) | Stages of the current task: context → work → checks → tests → push → deploy, plus Claude's plan | “Roadmap” pane or a band under the chat |
+| 🌿 | [**git-branches**](en/git-branches) | Branches, sync with the remote, GitHub pull requests and commits, GitLens-style | “Branches” pane |
+| 🧭 | [**context-inspector**](en/context-inspector) | What fills the context window and what you can free | “Context” pane |
+| 🎛️ | [**command-deck**](en/command-deck) | The main slash commands with a one-line why and one-click run | “Commands” pane |
+| ➡️ | [**next-steps**](en/next-steps) | 2–3 likely next prompts after each reply: click one to draft it | Line above the prompt |
+| ⚡ | [**token-speed**](en/token-speed) | *Superseded by usage-band's SPEED column — don't install both* | Status line |
 
-Every mod ships in English ([`en/`](en)) and Russian ([`ru/`](ru)). Pick one language per mod — both versions use the same plugin name.
+Every mod comes in English ([`en/`](en)) and Russian ([`ru/`](ru)). Pick one language per mod: both versions share the same name.
+
+All panes share one style: a header with the main fact and quiet icon buttons, sections as cards with a colored icon and a count, and color only where it means something (green done, yellow waiting, red error, blue now).
 
 ## What it looks like
 
 **usage-band** — above the prompt:
 
 ```
-CONTEXT                  MEMORY               5 HOURS                   WEEK
-42% ━━━━──── 84k/200k    2 files ~2k tok.     24% ━━────── ↻ 2h 15m     91% ━━━━━━━─ ↻ 3d 4h
+CONTEXT                    MEMORY                  5 HOURS
+42% ━━━━──── 84k/200k      2 files ~2k tok.        24% ━━────── ↻ 2h 15 min
+
+WEEK                       SPEED                   CACHE
+91% ━━━━━━━─ ↻ 3d 4h       52 tok/s ▂▄▆▅▇ 3,400 tok 42 min ━━━───── of 1h
 ```
 
-**roadmap** — the Roadmap pane:
+**roadmap** — the “Roadmap” pane:
 
 ```
-TASK                                 ● Claude is working · 6m
-build the login page
-━━━━━━━━━━━━──────────  2 of 4
+build the login page                                  ↺  ⤓
+Claude is working · stage 3 of 4 · 6 min
 
-✓ Context                                                1m
-  read 6 files · 14 actions
-● Implementation                                         4m
-  3 files: login.tsx, api.ts, styles.css
-  ✓ Lay out the form
+◉ STAGES                                            2/4
+  ✓ Context                                        1 min
+  ✓ Implementation                                 4 min
+  │ 3 files: login.tsx, api.ts, styles.css
+  ● Tests                                         <1 min
+  ○ Push
+
+☰ PLAN                                              2/5
+  ✓ 2 steps done
   ● Wire up the API
-○ Tests
-○ Push
-
-[ Details ]  [ New task ]
-▸ Earlier · 3
 ```
 
-**git-branches** — the Branches pane:
+**git-branches** — the “Branches” pane:
 
 ```
-acme/site                            [ ↻ Refresh ] [ ⇣ Fetch ]
-updated 1m ago · open on GitHub
+⎇ acme/site · main                                  ↻  ⇣
+ ↑2 unpushed   ✎ 3 changes   updated just now
 
-● main                                            ↑2 to push
-  ✎ 2 modified · 1 untracked
-
-BRANCHES · 3
-○ feature/login                                ↓5  #12   2d
-  b2c3d4e feat: login
-○ wip                                            local only
-PULL REQUESTS · 1
-✓ Login page                                            #12
-  feature/login · checks passed · approved
-COMMITS · main · 8
-│ a1b2c3d fix: header                                    3h
+⎇ BRANCHES                                            2
+  feature/login                       ↓5  #12   AN   2d
+⇄ PULL REQUESTS                                       1
+  #12 Login page                           approved  ✓
+◉ COMMITS                                             8
+  a1b2c3d fix: header                            IP   3h
 ```
 
-**context-inspector** — the Context pane:
+**context-inspector** — the “Context” pane:
 
 ```
-CONTEXT · claude-opus-5-5                          [ ↻ Refresh ]
-84k of 200k · 42%
-████████▓▓▓▓▒▒▒░░░░░░░░░░░░░░░░░░░░░░░
+Context 42%                                           ↻
+84k of 200k tokens · updated just now
+████████▓▓▓▓▒▒▒░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░▒▒▒▒
 
-• MCP server “supabase” takes 10k (2 tools) — disable it in /mcp if you don't need it
+⚠ MCP server “supabase” takes 10k — disable it in /mcp if you don't need it
 
-WHAT FILLS IT
-● Messages                                     55k · 28%
-● System tools                                 14k · 7%
-MCP SERVERS · 3
-● supabase                                   2 tools · 10k
-◌ vercel                                       2 on demand
+▤ BREAKDOWN                                 ~84k tok
+  ● Messages                               55k · 28%
 ```
 
-**token-speed** — under the prompt:
+**command-deck** — the “Commands” pane:
 
 ```
-⚡ ≈48 tok/s ▂▄▆                                 while it answers: the last 2 seconds
-⚡ 52 tok/s ▂▄▆▅▇ · 3,400 tokens in 1 min 5 s   after: the average for the turn, exact from the API
+◐ CONTEXT & MEMORY                                      4
+  /compact                                              ▶
+  Condense the conversation to free up context
 ```
 
-## Install
+**next-steps** — above the prompt after a reply:
 
-Requires **Claude Code 2.1.288** or newer. The mods use the function-hooks API, which is in early access and may change between releases.
+```
+NEXT  1 · Run the login tests again   2 · Add the same check to signup.ts   3 · Open a draft PR   0 · hide
+```
 
-**1. Clone the repository** somewhere permanent:
+## Installation
+
+Requires **Claude Code 2.1.288** or newer. The mods use the function-hooks API, which is in early access and may change between versions.
+
+**1. Clone the repository** into a permanent folder:
 
 ```bash
 git clone https://github.com/Zulut30/claude-mode.git ~/claude-mode
 ```
 
-**2. Turn on the mods you want.**
+**2. Point Claude Code at the mods you want.**
 
-*Desktop app (and every session).* Open `~/.claude/settings.json` and add `CLAUDE_CODE_PLUGIN_DIRS` to its `env` block: absolute paths to the mod folders, separated by `;` on Windows or `:` on macOS/Linux. If you already have an `env` block, add the line inside it.
+*Desktop app (and every session).* Open `~/.claude/settings.json` and add `CLAUDE_CODE_PLUGIN_DIRS` to the `env` block: absolute paths to the mod folders, separated by `;` on Windows or `:` on macOS/Linux. If there is already an `env` block, add the line inside it.
 
 ```json
 {
   "env": {
-    "CLAUDE_CODE_PLUGIN_DIRS": "/Users/you/claude-mode/en/usage-band:/Users/you/claude-mode/en/roadmap:/Users/you/claude-mode/en/git-branches:/Users/you/claude-mode/en/context-inspector:/Users/you/claude-mode/en/token-speed"
+    "CLAUDE_CODE_PLUGIN_DIRS": "/Users/you/claude-mode/en/usage-band:/Users/you/claude-mode/en/roadmap:/Users/you/claude-mode/en/git-branches:/Users/you/claude-mode/en/context-inspector:/Users/you/claude-mode/en/command-deck:/Users/you/claude-mode/en/next-steps"
   }
 }
 ```
 
-On Windows: `"C:\\Users\\you\\claude-mode\\en\\usage-band;C:\\Users\\you\\claude-mode\\en\\roadmap;…"`.
-
 *Terminal only, for one run:*
 
 ```bash
-claude --plugin-dir ~/claude-mode/en/usage-band --plugin-dir ~/claude-mode/en/roadmap --plugin-dir ~/claude-mode/en/git-branches --plugin-dir ~/claude-mode/en/context-inspector --plugin-dir ~/claude-mode/en/token-speed
+claude --plugin-dir ~/claude-mode/en/usage-band --plugin-dir ~/claude-mode/en/roadmap --plugin-dir ~/claude-mode/en/git-branches --plugin-dir ~/claude-mode/en/context-inspector --plugin-dir ~/claude-mode/en/command-deck --plugin-dir ~/claude-mode/en/next-steps
 ```
 
 **3. Restart the app** or open a new session.
 
-**Update:** `git pull` in the repository folder, then start a new session. **Remove:** take the paths out of `CLAUDE_CODE_PLUGIN_DIRS`.
+**Update:** `git pull` in the repository folder, then a new session. **Remove:** take the paths out of `CLAUDE_CODE_PLUGIN_DIRS`.
 
 ## Commands
 
 | Command | What it does |
 | --- | --- |
-| `/roadmap` | Open the Roadmap pane |
-| `/roadmap reset` | Start a new task; the current one moves to "Earlier" |
-| `/roadmap band` · `/roadmap pane` | Move the roadmap under the chat (above the prompt) or back to its pane |
-| `/branches` | Open the Branches pane |
-| `/branches fetch` | Run `git fetch --all --prune`, then refresh |
+| `/roadmap` | Open the roadmap |
+| `/roadmap reset` | Start a new task; the current one moves to “Earlier” |
+| `/roadmap band` · `/roadmap pane` | Move the roadmap under the chat (above the prompt) or back into the pane |
+| `/branches` | Open the branches pane and refresh |
+| `/branches fetch` | Run `git fetch --all --prune` and refresh |
 | `/inspector` | Open the context inspector and recount |
+| `/deck` | Open the “Commands” pane |
+| `/next` · `/next off` · `/next on` | Next-step suggestions: status, turn off, turn on |
 
-The usage band and token speed need no command. The Roadmap and Context panes open by themselves when a session starts, the Branches pane opens by itself in a git project.
+The band above the prompt and the next-step suggestions work on their own. The roadmap, the context inspector and “Commands” open by themselves when a session starts; “Branches” does in a git project.
 
 ## What the mods read and run
 
-The mods run inside Claude Code and send nothing to third parties.
-
 | Mod | Reads | Runs | Network |
 | --- | --- | --- | --- |
-| usage-band | Session figures from Claude Code: context, memory, limits | — | none |
-| roadmap | Your prompts (for the task title) and Claude's tool calls in the session; whether files like `package.json` or `vercel.json` exist in the project | `git rev-parse` | none |
-| git-branches | The state of the repository in the session folder | `git for-each-ref`, `git status`, `git log`, `git remote`; `gh pr list`; `git fetch` only when you press **Fetch** | `gh` calls GitHub as your account; `fetch` talks to your remote |
-| context-inspector | The context breakdown from Claude Code (a local estimate, like `/context`) | — | none |
-| token-speed | The model's response stream (counts characters and tokens) | — | none |
+| usage-band | Session figures from Claude Code: context, memory, limits; the model's response stream (speed, cache lifetime) | — | no |
+| roadmap | Your prompts (for the task title) and Claude's tool calls in the session; whether the project has files like `package.json`, `vercel.json` | `git rev-parse` | no |
+| git-branches | The repository in the session folder (or a subfolder) | `git for-each-ref`, `git status`, `git log`, `git remote`; `gh pr list`; `git fetch` only from the ⇣ button | `gh` talks to GitHub as you; `fetch` to your remote |
+| context-inspector | Claude Code's context breakdown (a local estimate, like `/context`) | — | no |
+| command-deck | Claude Code's command list | Commands — only when you press ▶ | no |
+| next-steps | The session's last messages | One Haiku call after a reply (off with `/next off`) | Through Claude Code: same account and API |
+| token-speed | The model's response stream | — | no |
 
-Mod state lives in the Claude Code session; nothing is written to disk.
+The mods write nothing to your files and send nothing to third parties. Their state lives in the Claude Code session; next-steps keeps only an “off” flag in Claude Code's plugin store.
 
-## Troubleshooting
+**Load:** git and recounts run only while the matching pane is open, the PR list is cached for 5 minutes, context usage is read from Claude Code only when it changes, and the live speed updates once a second.
 
-- **No band or speed line.** The speed appears during or after the model's first answer. Check that the paths in `CLAUDE_CODE_PLUGIN_DIRS` are absolute and point at the mod folder (the one containing `.claude-plugin`).
-- **"No git repository here" in the Branches pane.** The session is not open in a project folder that uses git.
+## If something doesn't show
+
+- **No band, speed or cache.** Speed and cache appear after the model's first reply. Check that the paths in `CLAUDE_CODE_PLUGIN_DIRS` are absolute and point at the mod folder (the one holding `.claude-plugin`), then open a new session.
+- **The branches pane says there's no git repository.** Neither the session folder nor its subfolders is a git project.
 - **No pull requests.** Install the [GitHub CLI](https://cli.github.com/) and run `gh auth login`.
-- **The pane opens in the wrong place.** The app decides where panes go; a mod cannot dock a pane to a side or add items to the app's menus.
+- **Digits 1–3 don't draft a suggestion.** Click it instead — clicks work everywhere.
+- **A pane opened on the wrong side.** The app decides where panes go; a mod can't pin one to a side or add a menu item.
 
 ## For developers
 
 ```
-en/  ru/                     two language versions of every mod
+en/  ru/                     two language versions of each mod
   <mod>/
     .claude-plugin/plugin.json   manifest
     hooks/hooks.json             which module to load
     hooks/register.ts(x)         the mod's code
     hooks/register.test.ts(x)    tests
-    types/index.d.ts             state types (when the mod keeps state)
+    types/index.d.ts             state types (if the mod keeps state)
 ```
 
-Tests and manifest checks: `claude plugin test en/roadmap`, `claude plugin validate en/roadmap`.
+Tests and manifest check: `claude plugin test en/roadmap`, `claude plugin validate en/roadmap`.

@@ -58,7 +58,7 @@ const PANE = {
 } as const
 
 describe('parsing', () => {
-  test('servers grouped, lists sorted, names kept', () => {
+  test('servers grouped, lists sorted, names translated', () => {
     const data = summarize(BREAKDOWN, 0)
     expect(data.servers.map(server => [server.name, server.tools, server.loaded, server.tokens])).toEqual([
       ['supabase', 2, 2, 10_000],
@@ -71,6 +71,7 @@ describe('parsing', () => {
     expect(data.memory[0]).toEqual({ name: 'CLAUDE.md', tokens: 1200, note: 'global' })
 
     expect(categoryName('Messages')).toBe('Messages')
+    expect(categoryName('Autocompact buffer')).toBe('Auto-compact reserve')
     expect(categoryName('MCP tools (deferred)')).toBe('MCP tools (on demand)')
     expect(categoryName('Something new')).toBe('Something new')
     expect(serverLabel(UUID)).toBe('23eb0007…')
@@ -100,7 +101,7 @@ describe('tips', () => {
   })
 })
 
-test('pane: fill, breakdown, servers and "More N" on both surfaces', async ($, on) => {
+test('pane: fill, breakdown, servers and "N more" on both surfaces', async ($, on) => {
   mock.clock(on, { now: 0 })
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('session.usage', () => ({ value: { startedAt: 0, context: { tokens: 84_000, window: 200_000, percent: 42, breakdown: BREAKDOWN }, rateLimits: [] } }))
@@ -110,18 +111,25 @@ test('pane: fill, breakdown, servers and "More N" on both surfaces', async ($, o
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'context-inspector', surface, ...PANE })
-    expect(await ui.find({ type: 'Text', text: '84k of 200k · 42%' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: 'Messages' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^Context 42%$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '84k of 200k tokens · updated just now' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^BREAKDOWN$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^Messages$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '55k · 28%' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: 'MCP SERVERS · 3' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^MCP SERVERS$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '3 · ~12k tok' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '2 tools · 10k' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: '23eb0007… · agents_create' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: '2 on demand' })).toBeDefined()
+    // A server with a UUID instead of a name is recognized by a sample tool.
+    expect(await ui.find({ type: 'Text', text: '23eb0007…' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '· agents_create' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^2 on demand$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^SKILLS$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'auto-compact at 167k' })).toBeDefined()
-    // The breakdown has 7 rows: the first 5 and a "More 2" button.
-    expect(await ui.find({ type: 'Text', text: 'MCP tools (on demand) · outside the window' })).toBeUndefined()
+    // The breakdown has 7 rows: the first 5 and a "2 more" button.
+    expect(await ui.find({ type: 'Text', text: 'MCP tools (on demand)' })).toBeUndefined()
     await ui.press({ key: 'more-categories' })
-    expect(await ui.find({ type: 'Text', text: 'MCP tools (on demand) · outside the window' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'MCP tools (on demand)' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '40k · outside the window' })).toBeDefined()
     await ui.press({ key: 'more-categories' })
     await ui.unmount()
   }
@@ -134,6 +142,6 @@ test('before the first answer — a clear placeholder', async ($, on) => {
 
   await $.command.run({ command: 'inspector', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
   const ui = await $.ui.mount({ plugin: 'context-inspector', surface: 'desktop', ...PANE })
-  expect(await ui.find({ type: 'Text', text: 'No context breakdown yet' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^No context breakdown yet/ })).toBeDefined()
   await ui.unmount()
 })

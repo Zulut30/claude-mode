@@ -1,0 +1,11 @@
+{
+  "name": "command-deck",
+  "version": "0.1.0",
+  "description": "Commands pane: the main Claude Code slash commands, each with a short note on why to use it and a ▶ button to run it in one click",
+  "author": {
+    "name": "Zulut30",
+    "url": "https://github.com/Zulut30"
+  },
+  "homepage": "https://github.com/Zulut30/claude-mode",
+  "types": "./types/index.d.ts"
+}

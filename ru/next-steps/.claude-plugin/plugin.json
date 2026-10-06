@@ -1,0 +1,11 @@
+{
+  "name": "next-steps",
+  "version": "0.1.0",
+  "description": "После ответа Claude — 2–3 вероятных следующих запроса над полем ввода: 1–3 или клик вставляет черновик, 0 скрывает",
+  "author": {
+    "name": "Zulut30",
+    "url": "https://github.com/Zulut30"
+  },
+  "homepage": "https://github.com/Zulut30/claude-mode",
+  "types": "./types/index.d.ts"
+}

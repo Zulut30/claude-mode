@@ -110,18 +110,25 @@ test('панель: заполнение, состав, серверы и «Ещ
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'context-inspector', surface, ...PANE })
-    expect(await ui.find({ type: 'Text', text: '84k из 200k · 42%' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'Контекст 42%' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '84k из 200k токенов · обновлено только что' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'СОСТАВ' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'Сообщения' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '55k · 28%' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: 'MCP-СЕРВЕРЫ · 3' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'MCP-СЕРВЕРЫ' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '3 · ~12k ток.' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '2 инстр. · 10k' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: '23eb0007… · agents_create' })).toBeDefined()
+    // Сервер с UUID вместо имени узнаётся по примеру инструмента.
+    expect(await ui.find({ type: 'Text', text: '23eb0007…' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '· agents_create' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '2 по запросу' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'НАВЫКИ' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'автосжатие при 167k' })).toBeDefined()
     // В составе 7 строк: первые 5 и кнопка «Ещё 2».
-    expect(await ui.find({ type: 'Text', text: 'MCP-инструменты (по запросу) · вне окна' })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: 'MCP-инструменты (по запросу)' })).toBeUndefined()
     await ui.press({ key: 'more-categories' })
-    expect(await ui.find({ type: 'Text', text: 'MCP-инструменты (по запросу) · вне окна' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'MCP-инструменты (по запросу)' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '40k · вне окна' })).toBeDefined()
     await ui.press({ key: 'more-categories' })
     await ui.unmount()
   }
@@ -134,6 +141,6 @@ test('до первого ответа — понятная заглушка', a
 
   await $.command.run({ command: 'inspector', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
   const ui = await $.ui.mount({ plugin: 'context-inspector', surface: 'desktop', ...PANE })
-  expect(await ui.find({ type: 'Text', text: 'Разбивки контекста пока нет' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Разбивки контекста пока нет/ })).toBeDefined()
   await ui.unmount()
 })

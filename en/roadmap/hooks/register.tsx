@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
 import type { PastTask, PlanItem, Project, Roadmap, Stage, StageId, StageStatus } from '../types'
 
@@ -22,13 +22,25 @@ const RESULT_STAGES: StageId[] = ['check', 'test', 'push', 'deploy']
 const GREEN = '#3fb950'
 const BLUE = '#58a6ff'
 const RED = '#f85149'
+const PURPLE = '#bc8cff'
 const GRAY = '#8b949e'
-const TRACK = '#8b949e55'
 
 const HISTORY_LIMIT = 8
 
 /** Height of a text line on desktop, in pixels: icons line up with the text by it. */
 const LINE_PX = 20
+
+/** Indent of a card's rows under the header text: the icon and the gap. */
+const INDENT = 2
+
+/** Section card background on desktop. */
+const CARD = '#8b949e14'
+
+/** How many plan steps are visible until the plan is expanded. */
+const PLAN_LIMIT = 5
+
+/** How many changed files are visible in the implementation line until it is expanded. */
+const FILES_LIMIT = 3
 
 const emptyStage = (): Stage => ({ status: 'pending', count: 0, last: '', files: [] })
 
@@ -65,7 +77,7 @@ const SHORT_TITLES: Record<StageId, string> = {
   deploy: 'Deploy',
 }
 
-/** Move the roadmap: into the side pane or into a band under the chat. */
+/** Move the roadmap: into the side pane or as a band under the chat. */
 const moveTo = async ($: EngineInterface, where: 'pane' | 'band') => {
   await update($, placement, () => where)
   if (where === 'pane') {
@@ -91,7 +103,7 @@ export const taskStatus = (current: Roadmap, found: Project, working: boolean) =
   return { mark: 'done' as const, text: 'Done · waiting for you', color: GREEN }
 }
 
-/** A value saved by an older version of the mod may lack newer fields. */
+/** A value from an older version of the mod may lack the new fields. */
 export const normalize = (value: Partial<Roadmap> | null | undefined): Roadmap => {
   const base = emptyMap()
 
@@ -114,7 +126,7 @@ const WORK_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 const SHELL_TOOLS = new Set(['Bash', 'PowerShell'])
 const CHECK_SKILLS = new Set(['verification-before-completion', 'code-review', 'requesting-code-review', 'security-review'])
 
-// Deploy means real deploy commands only, not the word "deploy" somewhere in the text.
+// Deploy means only real deploy commands, not the word "deploy" somewhere in the text.
 const DEPLOY_RE =
   /\b(vercel|netlify|wrangler|flyctl|railway|serverless|heroku|kamal|dokku|surge)\b(?![.\w-])|\b(firebase|fly|cdk|sam|amplify|eb)\s+deploy\b|\bgcloud\s+(app|run|functions)\s+deploy\b|\b(npm|pnpm|yarn|bun)\s+(run\s+)?deploy\b|\bdocker\s+push\b|\bkubectl\s+apply\b|\bhelm\s+(upgrade|install)\b|\bgh\s+workflow\s+run\b|\bdeploy\.(sh|ps1)\b/i
 const PUSH_RE = /\bgit\s+(push|commit)\b|\bgh\s+pr\s+create\b/i
@@ -122,7 +134,7 @@ const TEST_RE =
   /\b(npm|pnpm|yarn|bun)\s+(run\s+)?test\b|\b(go|cargo|dotnet|deno|bun|make)\s+test\b|\bplugin\s+test\b|\b(pytest|jest|vitest|mocha|phpunit|playwright|cypress)\b/i
 const CHECK_RE =
   /\b(tsc|eslint|biome|ruff|mypy|flake8|pylint|clippy|phpcs|stylelint|typecheck|type-check|lint|validate)\b|\bprettier\s+--check\b|\bcargo\s+check\b|\bgo\s+vet\b|\bphp\s+-l\b|\b(npm|pnpm|yarn|bun)\s+(run\s+)?build\b|\bgit\s+diff\b/i
-// Commands that only read: if the whole script is made of them, it is context gathering.
+// Read-only commands: if the whole script consists of them, it is context gathering.
 const READ_RE =
   /^(ls|dir|cat|head|tail|less|more|find|grep|rg|pwd|wc|tree|stat|file|which|where|type|echo|printf|sort|uniq|cut|jq|sleep|true|Get-ChildItem|Get-Content|Get-Item|Select-String|Test-Path|Resolve-Path|sed\s+-n|git\s+(status|log|show|diff|branch|remote|ls-files|rev-parse|blame|config\s+--get)|gh\s+(repo\s+view|pr\s+(list|view|status|checks|diff)|issue\s+(list|view)|run\s+(list|view)|api|auth\s+status|search))\b/i
 const SKIP_SEGMENT_RE = /^(cd|export|set|do|done|then|fi|for|if|else|while)\b/
@@ -157,7 +169,7 @@ const short = (text: string, max: number) => {
 
 /**
  * A command in brief, without paths or variables: take the line of the script
- * it was run for (`pattern`), then its first words.
+ * it was run for (`pattern`), and the first words of that line.
  * `S="C:/…"; claude plugin test "$M"` → `claude plugin test`.
  */
 export const describeCommand = (command: string, pattern?: RegExp) => {
@@ -191,7 +203,7 @@ export const describeCommand = (command: string, pattern?: RegExp) => {
 
 export type Step = { stage: StageId; last: string; file?: string }
 
-/** Which stage a tool call belongs to; null means it doesn't affect the map. */
+/** Which stage a tool call belongs to; null means it does not affect the roadmap. */
 export const classify = (e: { tool: string; [key: string]: unknown }): Step | null => {
   const { tool } = e
 
@@ -208,7 +220,10 @@ export const classify = (e: { tool: string; [key: string]: unknown }): Step | nu
     // Deploy and push only by the commands themselves; tests and checks can also be told by a quoted file.
     const found = rules.find(([, re]) => re.test(bare)) ?? rules.slice(2).find(([, re]) => re.test(script))
     if (found) {
-      return { stage: found[0], last: describeCommand(command, found[1]) }
+      // In "git add && git commit && git push" the label is the push itself, otherwise the stage would count as "commit only".
+      const pattern = found[0] === 'push' && /\bgit\s+push\b/i.test(bare) ? /\bgit\s+push\b/i : found[1]
+
+      return { stage: found[0], last: describeCommand(command, pattern) }
     }
 
     const segments = commandSegments(bare)
@@ -252,7 +267,7 @@ export const classify = (e: { tool: string; [key: string]: unknown }): Step | nu
 
 const isCommitPending = (stage: Stage) => stage.status === 'active' && stage.last.startsWith('committed')
 
-/** Step start: the stage becomes current, and the previously current one is done. */
+/** Start of a step: its stage becomes current, the previous current one is done. */
 export const startStep = (current: Roadmap, step: Step, now: number): Roadmap => {
   const stages = { ...current.stages }
   for (const { id } of STAGES) {
@@ -276,7 +291,7 @@ export const startStep = (current: Roadmap, step: Step, now: number): Roadmap =>
   return { ...current, startedAt: current.startedAt ?? now, stages }
 }
 
-/** Step end: checks, tests, push and deploy take their status from the command's result. */
+/** End of a step: checks, tests, push and deploy take their status from the command's result. */
 export const finishStep = (current: Roadmap, step: Step, isError: boolean, now: number): Roadmap => {
   if (!RESULT_STAGES.includes(step.stage)) {
     return current
@@ -293,7 +308,7 @@ export const finishStep = (current: Roadmap, step: Step, isError: boolean, now: 
   }
 }
 
-/** End of turn: context and implementation are no longer running. */
+/** End of the turn: context and implementation are no longer "running". */
 export const closeTurn = (current: Roadmap, now: number): Roadmap => {
   const stages = { ...current.stages }
   for (const id of ['context', 'work'] as const) {
@@ -307,8 +322,10 @@ export const closeTurn = (current: Roadmap, now: number): Roadmap => {
 
 // ── New task ─────────────────────────────────────────────────────────────
 
+// English confirmations, plus the Russian ones from the Russian edition of the mod.
+// A bare "go" counts only on its own ("go!"), not as the start of "go through the tests".
 const CONTINUE_RE =
-  /^(go ahead|do it|sounds good|yes|yep|yeah|ok|okay|sure|go|continue|proceed|next|lgtm|right|agreed)([\s,.!]|$)/i
+  /^(yes|yeah|yep|yup|sure|ok|okay|go ahead|go on|go(?=[.!]*$)|let['’]?s go|do it|continue|carry on|keep going|proceed|next|agreed|sounds good|lgtm|confirmed|ship it|да|ага|угу|ок|окей|давай|продолжай|продолжи|дальше|го|верно|согласен|подтверждаю|поехали|запускай|можно)([\s,.!]|$)/i
 
 // A person's requests: from the input box, the phone, the desktop app. Agent messages (`peer`) and notifications are not.
 const PERSON_ORIGINS = new Set(['composer', 'bridge', 'sdk'])
@@ -365,7 +382,7 @@ const startNewTask = async ($: EngineInterface, task: string) => {
   await update($, map, () => ({ ...emptyMap(), task }))
 }
 
-// ── Claude's own plan ────────────────────────────────────────────────────
+// ── The plan Claude keeps itself ─────────────────────────────────────────
 
 type Todo = { content: string; status: PlanItem['status'] }
 
@@ -444,10 +461,10 @@ export const plural = (n: number, one: string, many: string) => (n === 1 ? one :
 export const formatDuration = (ms: number) => {
   const minutes = Math.floor(ms / 60_000)
   if (minutes < 1) {
-    return '<1m'
+    return '<1 min'
   }
 
-  return minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`
+  return minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} hr ${minutes % 60} min`
 }
 
 /** Which stages to show: those that have run or that fit the project. */
@@ -467,46 +484,95 @@ const MARKS: Record<Mark, { glyph: string; color?: string; alt: string }> = {
 
 const PLAN_MARK: Record<PlanItem['status'], Mark> = { completed: 'done', in_progress: 'active', pending: 'pending' }
 
-/** A GitHub Actions-style step icon, for desktop. */
-const iconSvg = (mark: Mark, size: number) => {
+/** A segment of the stage timeline: `passed` means work has already gone past it, `ahead` that it is still ahead. */
+type Rail = 'passed' | 'ahead'
+
+const railPath = (from: number, to: number, rail: Rail) =>
+  `<path d="M8 ${from}V${to}" stroke="${rail === 'passed' ? GREEN : GRAY}" ` +
+  `stroke-opacity="${rail === 'passed' ? '.6' : '.35'}" stroke-width="1.5"/>`
+
+/**
+ * A step icon in the spirit of GitHub Actions, for desktop: a circle of `size`
+ * pixels centred in the line. `rails` is the timeline above and below the circle,
+ * up to the line's edges: in neighbouring rows it joins into one vertical line.
+ */
+const iconSvg = (mark: Mark, size: number, rails: { top?: Rail; bottom?: Rail } = {}) => {
   const body: Record<Mark, string> = {
     done:
-      `<circle cx="8" cy="8" r="8" fill="${GREEN}"/>` +
-      `<path d="M4.6 8.3l2.2 2.2 4.6-4.8" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>`,
-    active: `<circle cx="8" cy="8" r="6.6" fill="none" stroke="${BLUE}" stroke-width="2"/><circle cx="8" cy="8" r="3" fill="${BLUE}"/>`,
+      `<circle cx="8" cy="8" r="6.5" fill="${GREEN}"/>` +
+      `<path d="M5.2 8.2l1.9 1.9 3.8-4" fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>`,
+    active: `<circle cx="8" cy="8" r="5.6" fill="none" stroke="${BLUE}" stroke-width="1.8"/><circle cx="8" cy="8" r="2.6" fill="${BLUE}"/>`,
     failed:
-      `<circle cx="8" cy="8" r="8" fill="${RED}"/>` +
-      `<path d="M5.5 5.5l5 5M10.5 5.5l-5 5" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/>`,
-    pending: `<circle cx="8" cy="8" r="6.6" fill="none" stroke="${GRAY}" stroke-opacity=".7" stroke-width="1.6"/>`,
+      `<circle cx="8" cy="8" r="6.5" fill="${RED}"/>` +
+      `<path d="M5.8 5.8l4.4 4.4M10.2 5.8l-4.4 4.4" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/>`,
+    pending: `<circle cx="8" cy="8" r="5.7" fill="none" stroke="${GRAY}" stroke-opacity=".7" stroke-width="1.6"/>`,
     skipped:
-      `<circle cx="8" cy="8" r="6.6" fill="none" stroke="${GRAY}" stroke-opacity=".5" stroke-width="1.6"/>` +
+      `<circle cx="8" cy="8" r="5.7" fill="none" stroke="${GRAY}" stroke-opacity=".5" stroke-width="1.6"/>` +
       `<path d="M5.5 8h5" stroke="${GRAY}" stroke-opacity=".7" stroke-width="1.6" stroke-linecap="round"/>`,
   }
 
-  // A `size`-pixel circle in a frame one text line high, so it sits exactly at the line's center.
+  // A frame one text line high, in icon units (16 units = `size` pixels).
   const unitsHigh = (LINE_PX * 16) / size
+  const top = (16 - unitsHigh) / 2
+  // The circle spans 1.5 to 14.5; the line stops one unit short of it.
+  const lines = (rails.top ? railPath(top, 0.5, rails.top) : '') + (rails.bottom ? railPath(15.5, top + unitsHigh, rails.bottom) : '')
 
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${LINE_PX}" ` +
-    `viewBox="0 ${(16 - unitsHigh) / 2} 16 ${unitsHigh}">${body[mark]}</svg>`
+    `viewBox="0 ${top} 16 ${unitsHigh}">${lines}${body[mark]}</svg>`
   )
 }
 
-const progressSvg = (part: number, width: number) => {
-  const fill = Math.round(width * Math.max(0, Math.min(1, part)))
+/** A timeline segment under a stage's detail line; without `rail`, blank space of the same width. */
+const railSvg = (rail?: Rail) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="${LINE_PX}" viewBox="0 -2 16 ${LINE_PX}">` +
+  (rail ? railPath(-2, 18, rail) : '') +
+  `</svg>`
 
-  return (
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="6" viewBox="0 0 ${width} 6">` +
-    `<rect width="${width}" height="6" rx="3" fill="${TRACK}"/>` +
-    (fill > 0 ? `<rect width="${Math.max(fill, 6)}" height="6" rx="3" fill="${GREEN}"/>` : '') +
-    `</svg>`
-  )
+/** How a section header looks: title, color, terminal icon (`glyph`) and desktop icon (`icon`, 16×16 grid, C is the color). */
+type Look = { title: string; color: string; glyph: string; icon: string }
+
+const LOOKS: Record<'stages' | 'plan' | 'past', Look> = {
+  stages: {
+    title: 'STAGES',
+    color: BLUE,
+    glyph: '◉',
+    icon:
+      '<path d="M8 4.5V11.5" stroke="C" stroke-width="1.4" stroke-opacity=".6"/>' +
+      '<circle cx="8" cy="3" r="2.1" fill="C"/><circle cx="8" cy="8" r="2.1" fill="C"/>' +
+      '<circle cx="8" cy="13" r="1.9" fill="none" stroke="C" stroke-width="1.4"/>',
+  },
+  plan: {
+    title: 'PLAN',
+    color: PURPLE,
+    glyph: '☰',
+    icon:
+      '<path d="M2.2 4.6l1.6 1.6 2.6-3" fill="none" stroke="C" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>' +
+      '<circle cx="4.3" cy="11.5" r="1.9" fill="none" stroke="C" stroke-width="1.4"/>' +
+      '<path d="M8.6 4.5H14M8.6 11.5H14" stroke="C" stroke-width="1.6" stroke-linecap="round"/>',
+  },
+  past: {
+    title: 'EARLIER',
+    color: GRAY,
+    glyph: '◷',
+    icon:
+      '<path d="M2 8a6 6 0 1 0 6-6 6.5 6.5 0 0 0-4.5 1.8L2 5.3" fill="none" stroke="C" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>' +
+      '<path d="M2 2v3.3h3.3" fill="none" stroke="C" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>' +
+      '<path d="M8 4.8V8l2.4 1.3" fill="none" stroke="C" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>',
+  },
 }
 
-type Line = { text: string; color?: string; isDim?: boolean; mark?: Mark }
+/** A section header icon, 12 pixels in a frame one text line high. */
+const sectionSvg = (look: Look) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="${LINE_PX}" viewBox="0 ${(16 - (LINE_PX * 16) / 12) / 2} 16 ${(LINE_PX * 16) / 12}">` +
+  look.icon.replace(/"C"/g, `"${look.color}"`) +
+  `</svg>`
 
-const stageLines = (id: StageId, stage: Stage, plan: PlanItem[], isSkipped: boolean, detailed: boolean, narrow: boolean): Line[] => {
-  if (isSkipped || (stage.status === 'pending' && !(id === 'work' && plan.length > 0))) {
+/** A detail line under a stage: dimmed unless a color is set. */
+type Line = { text: string; color?: string }
+
+const stageLines = (id: StageId, stage: Stage, isSkipped: boolean, detailed: boolean, narrow: boolean): Line[] => {
+  if (isSkipped || stage.status === 'pending') {
     return []
   }
 
@@ -518,40 +584,26 @@ const stageLines = (id: StageId, stage: Stage, plan: PlanItem[], isSkipped: bool
       text: files
         ? `read ${files} ${plural(files, 'file', 'files')} · ${stage.count} ${plural(stage.count, 'action', 'actions')}`
         : `${stage.count} ${plural(stage.count, 'action', 'actions')} · ${stage.last}`,
-      isDim: true,
     })
   }
 
   if (id === 'work') {
-    if (stage.files.length > 0) {
-      const names = detailed ? stage.files.join(', ') : stage.files.slice(-3).join(', ')
-      const more = !detailed && stage.files.length > 3 ? ` +${stage.files.length - 3}` : ''
-      lines.push({ text: `${stage.files.length} ${plural(stage.files.length, 'file', 'files')}: ${names}${more}`, isDim: true })
+    const files = stage.files
+    const count = `${files.length} ${plural(files.length, 'file', 'files')}`
+    if (files.length > FILES_LIMIT && detailed) {
+      // Detailed: each file on its own line.
+      lines.push({ text: `${count}:` }, ...files.map(name => ({ text: name })))
+    } else if (files.length > 0) {
+      const more = files.length > FILES_LIMIT ? ` +${files.length - FILES_LIMIT}` : ''
+      lines.push({ text: `${count}: ${files.slice(-FILES_LIMIT).join(', ')}${more}` })
     } else if (stage.count > 0) {
-      lines.push({ text: stage.last, isDim: true })
-    }
-
-    if (plan.length > 0 && !narrow) {
-      const limit = detailed ? plan.length : 5
-      const firstOpen = plan.findIndex(item => item.status !== 'completed')
-      const start = Math.max(0, Math.min(firstOpen === -1 ? plan.length : firstOpen, plan.length - limit))
-      if (start > 0) {
-        lines.push({ text: `${start} more ${plural(start, 'step', 'steps')} done`, isDim: true, mark: 'done' })
-      }
-      for (const item of plan.slice(start, start + limit)) {
-        lines.push({ text: item.title, mark: PLAN_MARK[item.status], isDim: item.status === 'completed' })
-      }
-      if (start + limit < plan.length) {
-        lines.push({ text: `and ${plan.length - start - limit} more`, isDim: true })
-      }
+      lines.push({ text: stage.last })
     }
   }
 
   if (RESULT_STAGES.includes(id)) {
     const runs = stage.count > 1 ? ` · ${stage.count} ${plural(stage.count, 'run', 'runs')}` : ''
-    lines.push(
-      stage.status === 'failed' ? { text: `${stage.last} — failed${runs}`, color: RED } : { text: `${stage.last}${runs}`, isDim: true },
-    )
+    lines.push(stage.status === 'failed' ? { text: `${stage.last} — failed${runs}`, color: RED } : { text: `${stage.last}${runs}` })
   }
 
   return narrow ? lines.slice(0, 1) : lines
@@ -571,15 +623,20 @@ const timeLabel = (stage: Stage, now: number) => {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
+    // The name is taken by another plugin: no command then, but the rest of session start must go on.
     await $.command.register({
       name: 'roadmap',
-      description: 'Open the task roadmap (`/roadmap reset` new task, `/roadmap band` under the chat, `/roadmap pane` back to the pane)',
+      description: 'Open the roadmap (`/roadmap reset` new task, `/roadmap band` under the chat, `/roadmap pane` back to the pane)',
+    }).catch(() => undefined)
+    // Every 30 s so the current step's time keeps ticking; while Claude is idle, time stands still and no redraw is needed.
+    $.clock.every(30_000, async () => {
+      if (await read($, isWorking)) {
+        $.ui.invalidate('ui.render')
+      }
     })
-    // Every 30 s, so the current step's time keeps ticking.
-    $.clock.every(30_000, () => $.ui.invalidate('ui.render'))
     await refreshProject($).catch(() => undefined)
     if ((await read($, placement)) === 'pane') {
-      void $.ui.open({ id: PANE, title: TITLE })
+      void $.ui.open({ id: PANE, title: TITLE }).catch(() => undefined)
     }
 
     return next(e)
@@ -616,7 +673,7 @@ export const register: Register = on => {
         await startNewTask($, taskTitle(text))
       }
     }
-    // Any request other than a slash command starts Claude's turn.
+    // Any prompt except a slash command starts a Claude turn.
     if (text && !text.startsWith('/')) {
       await update($, isWorking, () => true)
     }
@@ -690,153 +747,222 @@ export const register: Register = on => {
     const detailed = await read($, isDetailed)
     const past = (await read($, history)).filter(item => !isServiceText(item.task))
     const showPast = await read($, isHistoryOpen)
-    const status = taskStatus(current, found, await read($, isWorking))
+    const working = await read($, isWorking)
+    const status = taskStatus(current, found, working)
     const now = await $.clock.now()
 
-    const columns = e.props.bodyColumns
-    const narrow = columns < 36
-    // Text width next to an icon. Texts are cut in advance: a long truncated line
-    // on desktop still takes up height as if it wrapped.
-    const room = Math.max(16, columns - 4)
     const stages = visibleStages(current, found)
     const lastStarted = stages.reduce((at, { id }, index) => (current.stages[id].status === 'pending' ? at : index), -1)
     const doneCount = stages.filter(({ id }) => current.stages[id].status === 'done').length
     const total = current.startedAt === undefined ? '' : formatDuration(now - current.startedAt)
-    const barCells = Math.max(8, Math.min(24, columns - 12))
-    const filledCells = Math.round((barCells * doneCount) / Math.max(1, stages.length))
+    const plan = current.plan
+
+    // All texts are cut to width up front: on desktop wrapping or clipping
+    // takes extra height anyway.
+    const columns = e.props.bodyColumns
+    const narrow = columns < 36
+    /** Row width inside the card: on desktop, minus its padding. */
+    const inner = columns - (Svg ? 2 : 0)
+    /** Cells for a row's icon with its gap: on desktop the icon is wider than a character. */
+    const iconW = Svg ? 3 : 2
 
     // Icon: on desktop an SVG one text line high, in the terminal a colored glyph.
-    const icon = (mark: Mark, isSmall = false) =>
+    const icon = (mark: Mark, size: 12 | 16, rails?: { top?: Rail; bottom?: Rail }) =>
       Svg ? (
-        <Svg source={iconSvg(mark, isSmall ? 12 : 16)} alt={MARKS[mark].alt} width={isSmall ? 12 : 16} height={LINE_PX} />
+        <Svg source={iconSvg(mark, size, rails)} alt={MARKS[mark].alt} width={size} height={LINE_PX} />
       ) : (
         <Text color={MARKS[mark].color} dimColor={!MARKS[mark].color} bold>
           {MARKS[mark].glyph}
         </Text>
       )
 
-    return (
-      <Box flexDirection="column">
-        <Box key="head" flexDirection="column" marginBottom={1}>
-          <Box key="head-row" flexDirection="row" justifyContent="space-between">
-            <Text dimColor bold>
-              TASK
+    const mark = (look: Look) =>
+      Svg ? <Svg source={sectionSvg(look)} alt="icon" width={12} height={LINE_PX} /> : <Text color={look.color}>{look.glyph}</Text>
+
+    /** A quiet button under a card's rows: "N more", "Collapse", "Show N". */
+    const more = (key: string, label: string, onPress: () => unknown) => (
+      <Box key={`${key}-row`} flexDirection="row" paddingLeft={INDENT}>
+        <Button key={key} plain dimColor label={label} onPress={onPress} />
+      </Box>
+    )
+
+    /** A section card: icon and title in the section color, summary on the right, rows under the title. */
+    const section = (id: string, look: Look, note: string, rows: RenderChildren[]) => (
+      <Box
+        key={`section-${id}`}
+        flexDirection="column"
+        marginTop={1}
+        {...(Svg ? { backgroundColor: CARD, paddingX: 1, paddingY: 1 } : {})}
+      >
+        <Box key={`section-${id}-head`} flexDirection="row" justifyContent="space-between" alignItems="center" columnGap={1}>
+          <Box key={`section-${id}-title`} flexDirection="row" alignItems="center" columnGap={1}>
+            {mark(look)}
+            <Text bold color={look.color}>
+              {look.title}
             </Text>
-            {status ? (
-              <Box key="status" flexDirection="row" alignItems="center" columnGap={1}>
-                {icon(status.mark, true)}
-                <Text color={status.color}>{status.text}</Text>
-                {total ? <Text dimColor>· {total}</Text> : null}
-              </Box>
+          </Box>
+          <Text dimColor>{note}</Text>
+        </Box>
+        {rows}
+      </Box>
+    )
+
+    const toggleDetails = () => update($, isDetailed, value => !value)
+
+    // ── Header: the task with the status under it; quiet buttons on the right (on desktop a native button is ≈ 5 cells).
+
+    const headRoom = Math.max(8, columns - (Svg ? 11 : 3) - 1)
+    const position = working && lastStarted >= 0 ? `stage ${lastStarted + 1} of ${stages.length}` : ''
+    const statusLine = status ? [status.text, position, total].filter(Boolean).join(' · ') : ''
+
+    const head = (
+      <Box key="head" flexDirection="row" justifyContent="space-between" alignItems="flex-start" columnGap={1}>
+        <Box key="head-text" flexDirection="column">
+          {current.task ? (
+            <Text bold>{short(current.task, headRoom)}</Text>
+          ) : (
+            <Text dimColor>{short('Appears with your next prompt', headRoom)}</Text>
+          )}
+          {statusLine ? <Text dimColor>{short(statusLine, headRoom)}</Text> : null}
+        </Box>
+        <Box key="toolbar" flexDirection="row" columnGap={1} flexShrink={0}>
+          <Button key="reset" plain dimColor label="↺" onPress={() => startNewTask($, '')} />
+          <Button key="to-band" plain dimColor label="⤓" onPress={() => moveTo($, 'band')} />
+        </Box>
+      </Box>
+    )
+
+    // ── Stages: a top-to-bottom timeline with no gaps, so on desktop the icons' line joins up.
+
+    const workFiles = current.stages.work.files.length
+    const isPlanLong = plan.length > PLAN_LIMIT
+    const isFilesLong = !narrow && workFiles > FILES_LIMIT
+    // On desktop stage rows have right padding, so the time does not stick to the highlight's edge.
+    const stageRoom = Math.max(8, inner - INDENT - (Svg ? 1 : 0) - iconW)
+
+    const stageRows = stages.map(({ id, title }, index) => {
+      const stage = current.stages[id]
+      const isSkipped = stage.status === 'pending' && index < lastStarted
+      const stageMark: Mark = isSkipped ? 'skipped' : stage.status
+      const lines = stageLines(id, stage, isSkipped, detailed, narrow)
+      const time = narrow ? '' : timeLabel(stage, now)
+      const heading = `${title}${isSkipped ? ' · skipped' : ''}`
+      // A timeline segment is passed if the work has already reached the stage below it.
+      const rails: { top?: Rail; bottom?: Rail } = {
+        top: index > 0 ? (index <= lastStarted ? 'passed' : 'ahead') : undefined,
+        bottom: index < stages.length - 1 ? (index < lastStarted ? 'passed' : 'ahead') : undefined,
+      }
+      const tint = stage.status === 'active' ? BLUE : stage.status === 'failed' ? RED : undefined
+
+      return (
+        <Box
+          key={`stage-${id}`}
+          flexDirection="column"
+          paddingLeft={INDENT}
+          {...(Svg ? { paddingRight: 1 } : {})}
+          {...(Svg && tint ? { backgroundColor: `${tint}1a` } : {})}
+        >
+          <Box key={`stage-${id}-head`} flexDirection="row" justifyContent="space-between" alignItems="center" columnGap={1}>
+            <Box key={`stage-${id}-title`} flexDirection="row" alignItems="center" columnGap={1}>
+              {icon(stageMark, 16, rails)}
+              <Text bold={stage.status === 'active'} dimColor={stage.status === 'pending'}>
+                {short(heading, stageRoom - (time ? time.length + 1 : 0))}
+              </Text>
+            </Box>
+            {time ? (
+              <Text color={stage.status === 'active' ? BLUE : undefined} dimColor={stage.status !== 'active'}>
+                {time}
+              </Text>
             ) : null}
           </Box>
-          <Text bold={Boolean(current.task)} dimColor={!current.task} wrap="wrap">
-            {current.task || 'Appears with your next request'}
-          </Text>
-          <Box key="progress" flexDirection="row" alignItems="center" columnGap={1}>
-            {Svg ? (
-              <Svg
-                source={progressSvg(doneCount / Math.max(1, stages.length), 120)}
-                alt={`${doneCount} of ${stages.length}`}
-                width={120}
-                height={6}
-              />
-            ) : (
-              <Box key="bar" flexDirection="row">
-                <Text color={GREEN}>{'━'.repeat(filledCells)}</Text>
-                <Text dimColor>{'─'.repeat(barCells - filledCells)}</Text>
+          {lines.map((line, i) => (
+            // The detail line sits under the stage title; on desktop the timeline continues on the left.
+            <Box key={`stage-${id}-line-${i}`} flexDirection="row" alignItems="center" columnGap={1} paddingLeft={Svg ? 0 : 2}>
+              {Svg ? <Svg source={railSvg(rails.bottom)} alt="" width={16} height={LINE_PX} /> : null}
+              <Text color={line.color} dimColor={!line.color}>
+                {short(line.text, stageRoom)}
+              </Text>
+            </Box>
+          ))}
+        </Box>
+      )
+    })
+
+    // Only one "details" button: on a long plan, otherwise on a long file list.
+    const stagesFooter =
+      isFilesLong && !isPlanLong
+        ? more(
+            'details',
+            detailed ? 'Collapse' : `${workFiles - FILES_LIMIT} more ${plural(workFiles - FILES_LIMIT, 'file', 'files')}`,
+            toggleDetails,
+          )
+        : null
+
+    // ── Claude's plan: a window around the current step; what is done before it fits in one line.
+
+    const planDone = plan.filter(item => item.status === 'completed').length
+    const firstOpen = plan.findIndex(item => item.status !== 'completed')
+    const planStart =
+      detailed || !isPlanLong ? 0 : Math.max(0, Math.min(firstOpen === -1 ? plan.length : firstOpen, plan.length - PLAN_LIMIT))
+    const planShown = detailed || !isPlanLong ? plan : plan.slice(planStart, planStart + PLAN_LIMIT)
+    const planRoom = Math.max(8, inner - INDENT - iconW)
+
+    const planRow = (key: string, rowMark: Mark, text: string, isActive: boolean) => (
+      <Box
+        key={key}
+        flexDirection="row"
+        alignItems="center"
+        columnGap={1}
+        paddingLeft={INDENT}
+        {...(Svg && isActive ? { backgroundColor: `${BLUE}1a` } : {})}
+      >
+        {icon(rowMark, 12)}
+        <Text dimColor={rowMark === 'done'}>{short(text, planRoom)}</Text>
+      </Box>
+    )
+
+    const planRows = [
+      planStart > 0 ? planRow('plan-done', 'done', `${planStart} ${plural(planStart, 'step', 'steps')} done`, false) : null,
+      ...planShown.map((item, index) =>
+        planRow(`plan-${planStart + index}`, PLAN_MARK[item.status], item.title, item.status === 'in_progress'),
+      ),
+      isPlanLong ? more('details', detailed ? 'Collapse' : `${plan.length - planShown.length} more`, toggleDetails) : null,
+    ]
+
+    // ── Earlier: collapsed until asked for.
+
+    const pastRows = showPast
+      ? past.map((item, index) => {
+          const time = narrow ? '' : formatDuration(item.durationMs)
+
+          return (
+            <Box key={`past-${index}`} flexDirection="row" justifyContent="space-between" alignItems="center" columnGap={1} paddingLeft={INDENT}>
+              <Box key={`past-${index}-name`} flexDirection="row" alignItems="center" columnGap={1}>
+                {icon(item.isFailed ? 'failed' : item.done === item.total ? 'done' : 'skipped', 12)}
+                <Text>{short(item.task, Math.max(8, inner - INDENT - iconW - (time ? time.length + 1 : 0)))}</Text>
               </Box>
-            )}
-            <Text dimColor>
-              {doneCount} of {stages.length}
-            </Text>
-          </Box>
-        </Box>
+              {time ? <Text dimColor>{time}</Text> : null}
+            </Box>
+          )
+        })
+      : []
 
-        <Box key="steps" flexDirection="column" rowGap={1}>
-          {stages.map(({ id, title }, index) => {
-            const stage = current.stages[id]
-            const isSkipped = stage.status === 'pending' && index < lastStarted
-            const mark: Mark = isSkipped ? 'skipped' : stage.status
-            const lines = stageLines(id, stage, current.plan, isSkipped, detailed, narrow)
-            const time = narrow ? '' : timeLabel(stage, now)
-            const heading = `${title}${isSkipped ? ' · skipped' : ''}`
-
-            return (
-              <Box
-                key={id}
-                flexDirection="row"
-                columnGap={1}
-                {...(Svg && (stage.status === 'active' || stage.status === 'failed')
-                  ? { backgroundColor: stage.status === 'active' ? '#58a6ff1a' : '#f851491a', paddingX: 1 }
-                  : {})}
-              >
-                {icon(mark)}
-                <Box key={`${id}-body`} flexDirection="column" flexGrow={1} flexShrink={1}>
-                  <Box key={`${id}-head`} flexDirection="row" justifyContent="space-between" columnGap={1}>
-                    <Text bold={stage.status === 'active'} dimColor={stage.status === 'pending'}>
-                      {short(heading, room - time.length - 1)}
-                    </Text>
-                    {time ? (
-                      <Text color={stage.status === 'active' ? BLUE : undefined} dimColor={stage.status !== 'active'}>
-                        {time}
-                      </Text>
-                    ) : null}
-                  </Box>
-                  {lines.map(line =>
-                    line.mark ? (
-                      <Box flexDirection="row" columnGap={1}>
-                        {icon(line.mark, true)}
-                        <Text dimColor={line.isDim}>{short(line.text, room - 3)}</Text>
-                      </Box>
-                    ) : (
-                      <Text
-                        color={line.color ?? (stage.status === 'active' ? BLUE : undefined)}
-                        dimColor={line.isDim && stage.status !== 'active'}
-                      >
-                        {short(line.text, room)}
-                      </Text>
-                    ),
-                  )}
-                </Box>
-              </Box>
-            )
-          })}
-        </Box>
-
-        <Box key="actions" flexDirection="row" columnGap={1} marginTop={1}>
-          <Button key="details" label={detailed ? 'Brief' : 'Details'} onPress={() => update($, isDetailed, value => !value)} />
-          <Button key="reset" label="New task" onPress={() => startNewTask($, '')} />
-          <Button key="to-band" label="⬇ Under chat" onPress={() => moveTo($, 'band')} />
-        </Box>
-
-        {past.length === 0 ? null : (
-          <Box key="past" flexDirection="column" marginTop={1}>
-            <Button
-              key="toggle-past"
-              plain
-              dimColor
-              label={`${showPast ? '▾' : '▸'} Earlier · ${past.length}`}
-              onPress={() => update($, isHistoryOpen, value => !value)}
-            />
-            {showPast
-              ? past.map((item, index) => (
-                  <Box key={`past-${index}`} flexDirection="row" justifyContent="space-between" columnGap={1}>
-                    <Box key={`past-${index}-name`} flexDirection="row" columnGap={1}>
-                      {icon(item.isFailed ? 'failed' : item.done === item.total ? 'done' : 'skipped', true)}
-                      <Text dimColor>{short(item.task, room - (narrow ? 3 : 10))}</Text>
-                    </Box>
-                    {narrow ? null : <Text dimColor>{formatDuration(item.durationMs)}</Text>}
-                  </Box>
-                ))
-              : null}
-          </Box>
-        )}
+    return (
+      <Box flexDirection="column">
+        {head}
+        {section('stages', LOOKS.stages, `${doneCount}/${stages.length}`, [...stageRows, stagesFooter])}
+        {plan.length > 0 ? section('plan', LOOKS.plan, `${planDone}/${plan.length}`, planRows) : null}
+        {past.length > 0
+          ? section('past', LOOKS.past, String(past.length), [
+              ...pastRows,
+              more('toggle-past', showPast ? 'Collapse' : `Show ${past.length}`, () => update($, isHistoryOpen, value => !value)),
+            ])
+          : null}
       </Box>
     )
   })
 
-  // The roadmap "under the chat": two lines above the prompt, the task and the stage chain.
+  // The roadmap "under the chat": one tidy row — the task, the stage steps joined by a line, the time and ⤢.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const others = await next(e)
     if (e.props.hasSurvey || (await read($, placement)) !== 'band') {
@@ -857,7 +983,6 @@ export const register: Register = on => {
     const stages = visibleStages(current, found)
     const lastStarted = stages.reduce((at, { id }, index) => (current.stages[id].status === 'pending' ? at : index), -1)
     const total = current.startedAt === undefined ? '' : formatDuration(now - current.startedAt)
-    const room = Math.max(16, e.props.bodyColumns - 4)
 
     const icon = (mark: Mark) =>
       Svg ? (
@@ -868,43 +993,65 @@ export const register: Register = on => {
         </Text>
       )
 
-    const right = [status?.text, total].filter(Boolean).join(' · ')
+    const steps = stages.map(({ id }, index) => {
+      const stage = current.stages[id]
+      const isSkipped = stage.status === 'pending' && index < lastStarted
+      const mark: Mark = isSkipped ? 'skipped' : stage.status
+      const time = stage.status === 'active' ? timeLabel(stage, now) : ''
+      // The running stage and a failure keep their name even in the compact chain.
+      const isLoud = stage.status === 'active' || stage.status === 'failed'
+
+      // The line to a stage is green if work has reached it, like the timeline in the pane.
+      return { id, mark, stage, isSkipped, isLoud, label: `${SHORT_TITLES[id]}${time ? ` ${time}` : ''}`, isPassed: index <= lastStarted }
+    })
+
+    // Everything in one row without wrapping: if the stage chain does not fit next to the task,
+    // passed and upcoming stages keep only their icons, and a very narrow band has no chain at all.
+    const iconW = Svg ? 2 : 1
+    const chainWidth = (isCompact: boolean) =>
+      steps.reduce(
+        (sum, step, index) =>
+          sum + (index > 0 ? (isCompact ? 1 : 2) + 2 : 0) + iconW + (!isCompact || step.isLoud ? step.label.length + 1 : 0),
+        0,
+      )
+    const rightW = (total ? total.length + 1 : 0) + (Svg ? 5 : 1)
+    const free = e.props.bodyColumns - rightW - (status ? iconW + 1 : 0) - 2
+    const chain = chainWidth(false) + 2 <= free - 16 ? 'full' : chainWidth(true) + 2 <= free - 16 ? 'compact' : 'none'
+    const room = Math.max(8, free - (chain === 'none' ? 0 : chainWidth(chain === 'compact') + 2))
 
     return (
       <Box flexDirection="column">
-        <Box key="roadmap-band" flexDirection="column">
-          <Box key="roadmap-band-top" flexDirection="row" justifyContent="space-between" columnGap={1}>
-            <Box key="roadmap-band-task" flexDirection="row" alignItems="center" columnGap={1}>
-              {status ? icon(status.mark) : null}
-              <Text bold>{short(current.task || 'Task', room - right.length - 12)}</Text>
-            </Box>
-            <Box key="roadmap-band-right" flexDirection="row" alignItems="center" columnGap={1}>
-              {right ? <Text color={status?.color} dimColor={!status}>{right}</Text> : null}
-              <Button key="to-pane" plain dimColor label="⤢ Pane" onPress={() => moveTo($, 'pane')} />
-            </Box>
+        <Box key="roadmap-band" flexDirection="row" alignItems="center" justifyContent="space-between" columnGap={2} marginBottom={1}>
+          <Box key="roadmap-band-task" flexDirection="row" alignItems="center" columnGap={1}>
+            {status ? icon(status.mark) : null}
+            <Text bold>{short(current.task || 'Task', room)}</Text>
           </Box>
-          <Box key="roadmap-band-steps" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={1}>
-            {stages.map(({ id }, index) => {
-              const stage = current.stages[id]
-              const isSkipped = stage.status === 'pending' && index < lastStarted
-              const mark: Mark = isSkipped ? 'skipped' : stage.status
-              const time = stage.status === 'active' ? timeLabel(stage, now) : ''
-
-              return (
-                <Box key={`band-${id}`} flexDirection="row" alignItems="center" columnGap={1}>
-                  {index > 0 ? <Text dimColor>›</Text> : null}
-                  {icon(mark)}
-                  <Text
-                    bold={stage.status === 'active'}
-                    color={stage.status === 'active' ? BLUE : stage.status === 'failed' ? RED : undefined}
-                    dimColor={stage.status === 'pending' || isSkipped}
-                  >
-                    {SHORT_TITLES[id]}
-                    {time ? ` ${time}` : ''}
-                  </Text>
+          {chain === 'none' ? null : (
+            <Box key="roadmap-band-steps" flexDirection="row" alignItems="center" columnGap={1}>
+              {steps.map((step, index) => (
+                <Box key={`band-${step.id}`} flexDirection="row" alignItems="center" columnGap={1}>
+                  {index > 0 ? (
+                    <Text color={step.isPassed ? GREEN : undefined} dimColor={!step.isPassed}>
+                      {chain === 'compact' ? '─' : '──'}
+                    </Text>
+                  ) : null}
+                  {icon(step.mark)}
+                  {chain === 'full' || step.isLoud ? (
+                    <Text
+                      bold={step.stage.status === 'active'}
+                      color={step.stage.status === 'active' ? BLUE : step.stage.status === 'failed' ? RED : undefined}
+                      dimColor={step.stage.status === 'pending' || step.isSkipped}
+                    >
+                      {step.label}
+                    </Text>
+                  ) : null}
                 </Box>
-              )
-            })}
+              ))}
+            </Box>
+          )}
+          <Box key="roadmap-band-right" flexDirection="row" alignItems="center" columnGap={1}>
+            {total ? <Text dimColor>{total}</Text> : null}
+            <Button key="to-pane" plain dimColor label="⤢" onPress={() => moveTo($, 'pane')} />
           </Box>
         </Box>
         {others}
