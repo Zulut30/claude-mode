@@ -1,10 +1,10 @@
 # 📊 usage-band — context, memory and limits
 
-A two-line band above the prompt.
+A band above the prompt: four even columns — a title on top, the value below. It shares the space with other mods: the roadmap "under the chat", for example, goes below it.
 
 ```
-━━━━────── 42% context · 84k / 200k       ━━──────── 24% limit 5h · resets in 2h 15m
-memory: 2 files · ~2k tokens               ━━━━━━━━━─ 91% weekly limit · resets in 3d 4h
+CONTEXT                  MEMORY               5 HOURS                   WEEK
+42% ━━━━──── 84k/200k    2 files ~2k tok.     24% ━━────── ↻ 2h 15m     91% ━━━━━━━─ ↻ 3d 4h
 ```
 
 - **Context** — how full the context window is, in percent and tokens.

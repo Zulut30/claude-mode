@@ -251,3 +251,55 @@ describe('статус задачи', () => {
     expect(taskStatus(finishStep(startStep(map, test, 2), test, true, 3), NO_PROJECT, false)?.text).toBe('Есть ошибка')
   })
 })
+
+const BAND = {
+  component: 'AbovePrompt',
+  props: { hasSurvey: false, isWorking: true, maxRows: 10, bodyColumns: 100, scroll: { offset: 0, bodyRows: 9 }, view: {} },
+} as const
+
+test('карта переносится под чат и обратно; соседняя полоса не пропадает', async ($, on) => {
+  mock.clock(on, { now: 0 })
+  const call = $.tool.call as unknown as (args: { tool: string; [key: string]: unknown }) => Promise<unknown>
+  const panes: string[] = []
+  on('ui.open', (_, e) => (panes.push(`open:${e.id}`), { value: { isPlaced: true } }))
+  on('ui.close', (_, e) => (panes.push(`close:${e.id}`), { value: undefined }))
+  on('tool.call', () => ({ result: 'ok', text: 'ok' }))
+  on('prompt.submit', (_, e) => ({ text: e.text }))
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+    const { Text } = $.ui.resolve(e)
+
+    return <Text>полоса лимитов</Text>
+  })
+
+  await $.prompt.submit(PROMPT('сделай страницу входа'))
+  await call({ tool: 'Read', file_path: 'C:/p/a.ts' })
+  await call({ tool: 'Edit', file_path: 'C:/p/a.ts', old_string: 'a', new_string: 'b' })
+
+  // Пока карта в панели, полоса показывает только соседа.
+  let band = await $.ui.mount({ plugin: 'roadmap', surface: 'desktop', ...BAND })
+  expect(await band.find({ type: 'Text', text: 'Выполнение' })).toBeUndefined()
+  await band.unmount()
+
+  const pane = await $.ui.mount({ plugin: 'roadmap', surface: 'desktop', ...PANE })
+  await pane.press({ key: 'to-band' })
+  await pane.unmount()
+  expect(panes).toContain('close:roadmap')
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const view = await $.ui.mount({ plugin: 'roadmap', surface, ...BAND })
+    expect(await view.find({ type: 'Text', text: 'сделай страницу входа' })).toBeDefined()
+    expect(await view.find({ type: 'Text', text: 'Контекст' })).toBeDefined()
+    expect(await view.find({ type: 'Text', text: /^Выполнение/ })).toBeDefined()
+    expect(await view.find({ type: 'Text', text: 'полоса лимитов' })).toBeDefined()
+    await view.unmount()
+  }
+
+  band = await $.ui.mount({ plugin: 'roadmap', surface: 'desktop', ...BAND })
+  await band.press({ key: 'to-pane' })
+  expect(await band.find({ type: 'Text', text: 'сделай страницу входа' })).toBeUndefined()
+  await band.unmount()
+  expect(panes.at(-1)).toBe('open:roadmap')
+
+  const reply = await $.command.run({ command: 'roadmap', args: 'band', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
+  expect(reply.text).toBe('Дорожная карта теперь под чатом, над полем ввода.')
+})

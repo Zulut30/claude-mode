@@ -32,8 +32,9 @@ build the login page
 - **Stages adapt to the project:** Push only in a git repository, Deploy only when deploy config exists, Checks and Tests only when the project has them. A stage that actually happened always shows.
 - **Claude's plan:** when Claude keeps a todo list, it appears under Implementation with checkmarks.
 - **Status in the header:** "Claude is working", "Done · waiting for you" or "Something failed".
+- **Under the chat:** the "⬇ Under chat" button or `/roadmap band` moves the roadmap into a compact band above the prompt — the task and a one-line stage chain. "⤢ Pane" or `/roadmap pane` puts it back in the side pane.
 
-**Commands:** `/roadmap` opens it, `/roadmap reset` starts a new task. The pane opens by itself when a session starts.
+**Commands:** `/roadmap` opens it, `/roadmap reset` starts a new task, `/roadmap band` / `/roadmap pane` move it under the chat or back to the pane. The pane opens by itself when a session starts.
 
 **Reads:** your prompts (for the task title) and the session's tool calls; checks whether files like `package.json` exist in the project. **Runs:** `git rev-parse`. **Network:** none.
 

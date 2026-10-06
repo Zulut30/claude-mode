@@ -251,3 +251,55 @@ describe('task status', () => {
     expect(taskStatus(finishStep(startStep(map, test, 2), test, true, 3), NO_PROJECT, false)?.text).toBe('Something failed')
   })
 })
+
+const BAND = {
+  component: 'AbovePrompt',
+  props: { hasSurvey: false, isWorking: true, maxRows: 10, bodyColumns: 100, scroll: { offset: 0, bodyRows: 9 }, view: {} },
+} as const
+
+test('the roadmap moves under the chat and back; the neighbouring band stays', async ($, on) => {
+  mock.clock(on, { now: 0 })
+  const call = $.tool.call as unknown as (args: { tool: string; [key: string]: unknown }) => Promise<unknown>
+  const panes: string[] = []
+  on('ui.open', (_, e) => (panes.push(`open:${e.id}`), { value: { isPlaced: true } }))
+  on('ui.close', (_, e) => (panes.push(`close:${e.id}`), { value: undefined }))
+  on('tool.call', () => ({ result: 'ok', text: 'ok' }))
+  on('prompt.submit', (_, e) => ({ text: e.text }))
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+    const { Text } = $.ui.resolve(e)
+
+    return <Text>usage band</Text>
+  })
+
+  await $.prompt.submit(PROMPT('build the login page'))
+  await call({ tool: 'Read', file_path: 'C:/p/a.ts' })
+  await call({ tool: 'Edit', file_path: 'C:/p/a.ts', old_string: 'a', new_string: 'b' })
+
+  // While the roadmap is in its pane, the band shows only the neighbour.
+  let band = await $.ui.mount({ plugin: 'roadmap', surface: 'desktop', ...BAND })
+  expect(await band.find({ type: 'Text', text: 'Implementation' })).toBeUndefined()
+  await band.unmount()
+
+  const pane = await $.ui.mount({ plugin: 'roadmap', surface: 'desktop', ...PANE })
+  await pane.press({ key: 'to-band' })
+  await pane.unmount()
+  expect(panes).toContain('close:roadmap')
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const view = await $.ui.mount({ plugin: 'roadmap', surface, ...BAND })
+    expect(await view.find({ type: 'Text', text: 'build the login page' })).toBeDefined()
+    expect(await view.find({ type: 'Text', text: 'Context' })).toBeDefined()
+    expect(await view.find({ type: 'Text', text: /^Implementation/ })).toBeDefined()
+    expect(await view.find({ type: 'Text', text: 'usage band' })).toBeDefined()
+    await view.unmount()
+  }
+
+  band = await $.ui.mount({ plugin: 'roadmap', surface: 'desktop', ...BAND })
+  await band.press({ key: 'to-pane' })
+  expect(await band.find({ type: 'Text', text: 'build the login page' })).toBeUndefined()
+  await band.unmount()
+  expect(panes.at(-1)).toBe('open:roadmap')
+
+  const reply = await $.command.run({ command: 'roadmap', args: 'band', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
+  expect(reply.text).toBe('The roadmap is now under the chat, above the prompt.')
+})

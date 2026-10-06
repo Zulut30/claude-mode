@@ -1,18 +1,18 @@
-import type { Register, SessionRateLimit } from 'claude-code'
+import type { Register, RenderChildren, SessionRateLimit } from 'claude-code'
 
 const GREEN = '#3fb950'
 const AMBER = '#d29922'
 const RED = '#f85149'
 const TRACK = '#8b949e55'
 
-const BAR_CELLS = 10
-const BAR_WIDTH = 64
+const BAR_CELLS = 8
+const BAR_WIDTH = 40
 const BAR_HEIGHT = 6
 
 const LIMIT_LABELS: Record<string, string> = {
-  five_hour: 'limit 5h',
-  seven_day: 'weekly limit',
-  spend_limit: 'spend limit',
+  five_hour: '5 HOURS',
+  seven_day: 'WEEK',
+  spend_limit: 'SPEND',
 }
 
 export const formatTokens = (n: number) =>
@@ -103,62 +103,71 @@ export const register: Register = on => {
       )
     }
 
-    const meter = (key: string, percent: number | undefined, title: string, hint: string) => (
-      <Box key={key} flexDirection="row" alignItems="center" columnGap={1}>
-        {bar(`${key}-bar`, percent, `${title}: ${percent ?? 0}%`)}
-        {percent === undefined ? (
-          <Text dimColor>—</Text>
-        ) : (
-          <Text color={levelColor(percent)} bold>
-            {Math.round(percent)}%
-          </Text>
-        )}
-        <Text>{title}</Text>
-        {hint ? <Text dimColor>· {hint}</Text> : null}
+    const percentText = (percent: number | undefined) =>
+      percent === undefined ? (
+        <Text dimColor>—</Text>
+      ) : (
+        <Text color={levelColor(percent)} bold>
+          {Math.round(percent)}%
+        </Text>
+      )
+
+    // Even columns, like stat cards: title on top, value below.
+    const count = 2 + Math.max(1, rateLimits.length)
+    const perRow = Math.min(count, e.props.bodyColumns >= 80 ? 4 : 2)
+    const width = `${Math.floor(100 / perRow)}%`
+
+    const column = (key: string, title: string, value: RenderChildren) => (
+      <Box key={key} flexDirection="column" width={width}>
+        <Text dimColor bold>
+          {title}
+        </Text>
+        <Box key={`${key}-value`} flexDirection="row" alignItems="center" columnGap={1}>
+          {value}
+        </Box>
       </Box>
     )
 
-    const limitRow = (limit: SessionRateLimit) => {
-      const left = formatLeft(limit.resetsAt, now)
-
-      return meter(
-        `limit-${limit.kind}`,
-        limit.percentUsed,
-        LIMIT_LABELS[limit.kind] ?? limit.kind,
-        left ? `resets in ${left}` : '',
-      )
-    }
+    // The band shares the space above the prompt with other mods: their render (`next`) goes below.
+    const others = await next(e)
 
     return (
-      <Box flexDirection="row" flexWrap="wrap" columnGap={4}>
-        <Box key="chat" flexDirection="column">
-          {meter(
-            'context',
-            context.percent,
-            'context',
-            context.tokens === undefined
-              ? 'after first reply'
-              : `${formatTokens(context.tokens)} / ${formatTokens(context.window)}`,
+      <Box flexDirection="column">
+        <Box key="usage" flexDirection="row" flexWrap="wrap" rowGap={1}>
+          {column('context', 'CONTEXT', [
+            percentText(context.percent),
+            bar('context-bar', context.percent, `Context: ${context.percent ?? 0}%`),
+            <Text dimColor>
+              {context.tokens === undefined
+                ? 'after the first answer'
+                : `${formatTokens(context.tokens)}/${formatTokens(context.window)}`}
+            </Text>,
+          ])}
+          {column(
+            'memory',
+            'MEMORY',
+            memoryFiles.length === 0
+              ? [<Text dimColor>none</Text>]
+              : [
+                  <Text>
+                    {memoryFiles.length} {plural(memoryFiles.length, 'file', 'files')}
+                  </Text>,
+                  <Text dimColor>~{formatTokens(memoryTokens)} tok.</Text>,
+                ],
           )}
-          <Box key="memory" flexDirection="row" columnGap={1}>
-            <Text dimColor>memory:</Text>
-            {memoryFiles.length === 0 ? (
-              <Text dimColor>none</Text>
-            ) : (
-              <Text>
-                {memoryFiles.length} {plural(memoryFiles.length, 'file', 'files')}
-              </Text>
-            )}
-            {memoryFiles.length === 0 ? null : <Text dimColor>· ~{formatTokens(memoryTokens)} tokens</Text>}
-          </Box>
+          {rateLimits.length === 0
+            ? column('limits', 'SUBSCRIPTION', [<Text dimColor>after the first answer</Text>])
+            : rateLimits.map((limit: SessionRateLimit) => {
+                const left = formatLeft(limit.resetsAt, now)
+
+                return column(`limit-${limit.kind}`, LIMIT_LABELS[limit.kind] ?? limit.kind.toUpperCase(), [
+                  percentText(limit.percentUsed),
+                  bar(`limit-${limit.kind}-bar`, limit.percentUsed, `${limit.kind}: ${limit.percentUsed}%`),
+                  left ? <Text dimColor>↻ {left}</Text> : null,
+                ])
+              })}
         </Box>
-        <Box key="subscription" flexDirection="column">
-          {rateLimits.length === 0 ? (
-            <Text dimColor>subscription limits — after the first reply</Text>
-          ) : (
-            rateLimits.map(limitRow)
-          )}
-        </Box>
+        {others}
       </Box>
     )
   })

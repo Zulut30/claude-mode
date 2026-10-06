@@ -1,18 +1,18 @@
-import type { Register, SessionRateLimit } from 'claude-code'
+import type { Register, RenderChildren, SessionRateLimit } from 'claude-code'
 
 const GREEN = '#3fb950'
 const AMBER = '#d29922'
 const RED = '#f85149'
 const TRACK = '#8b949e55'
 
-const BAR_CELLS = 10
-const BAR_WIDTH = 64
+const BAR_CELLS = 8
+const BAR_WIDTH = 40
 const BAR_HEIGHT = 6
 
 const LIMIT_LABELS: Record<string, string> = {
-  five_hour: 'лимит 5 ч',
-  seven_day: 'лимит недели',
-  spend_limit: 'лимит расходов',
+  five_hour: '5 ЧАСОВ',
+  seven_day: 'НЕДЕЛЯ',
+  spend_limit: 'РАСХОДЫ',
 }
 
 export const formatTokens = (n: number) =>
@@ -111,62 +111,71 @@ export const register: Register = on => {
       )
     }
 
-    const meter = (key: string, percent: number | undefined, title: string, hint: string) => (
-      <Box key={key} flexDirection="row" alignItems="center" columnGap={1}>
-        {bar(`${key}-bar`, percent, `${title}: ${percent ?? 0}%`)}
-        {percent === undefined ? (
-          <Text dimColor>—</Text>
-        ) : (
-          <Text color={levelColor(percent)} bold>
-            {Math.round(percent)}%
-          </Text>
-        )}
-        <Text>{title}</Text>
-        {hint ? <Text dimColor>· {hint}</Text> : null}
+    const percentText = (percent: number | undefined) =>
+      percent === undefined ? (
+        <Text dimColor>—</Text>
+      ) : (
+        <Text color={levelColor(percent)} bold>
+          {Math.round(percent)}%
+        </Text>
+      )
+
+    // Ровные колонки, как карточки статистики: подпись сверху, значение снизу.
+    const count = 2 + Math.max(1, rateLimits.length)
+    const perRow = Math.min(count, e.props.bodyColumns >= 80 ? 4 : 2)
+    const width = `${Math.floor(100 / perRow)}%`
+
+    const column = (key: string, title: string, value: RenderChildren) => (
+      <Box key={key} flexDirection="column" width={width}>
+        <Text dimColor bold>
+          {title}
+        </Text>
+        <Box key={`${key}-value`} flexDirection="row" alignItems="center" columnGap={1}>
+          {value}
+        </Box>
       </Box>
     )
 
-    const limitRow = (limit: SessionRateLimit) => {
-      const left = formatLeft(limit.resetsAt, now)
-
-      return meter(
-        `limit-${limit.kind}`,
-        limit.percentUsed,
-        LIMIT_LABELS[limit.kind] ?? limit.kind,
-        left ? `сброс через ${left}` : '',
-      )
-    }
+    // Полоса делит место над полем ввода с другими модами: их рисунок (`next`) идёт ниже.
+    const others = await next(e)
 
     return (
-      <Box flexDirection="row" flexWrap="wrap" columnGap={4}>
-        <Box key="chat" flexDirection="column">
-          {meter(
-            'context',
-            context.percent,
-            'контекст',
-            context.tokens === undefined
-              ? 'после первого ответа'
-              : `${formatTokens(context.tokens)} / ${formatTokens(context.window)}`,
+      <Box flexDirection="column">
+        <Box key="usage" flexDirection="row" flexWrap="wrap" rowGap={1}>
+          {column('context', 'КОНТЕКСТ', [
+            percentText(context.percent),
+            bar('context-bar', context.percent, `Контекст: ${context.percent ?? 0}%`),
+            <Text dimColor>
+              {context.tokens === undefined
+                ? 'после первого ответа'
+                : `${formatTokens(context.tokens)}/${formatTokens(context.window)}`}
+            </Text>,
+          ])}
+          {column(
+            'memory',
+            'ПАМЯТЬ',
+            memoryFiles.length === 0
+              ? [<Text dimColor>нет</Text>]
+              : [
+                  <Text>
+                    {memoryFiles.length} {plural(memoryFiles.length, 'файл', 'файла', 'файлов')}
+                  </Text>,
+                  <Text dimColor>~{formatTokens(memoryTokens)} ток.</Text>,
+                ],
           )}
-          <Box key="memory" flexDirection="row" columnGap={1}>
-            <Text dimColor>память:</Text>
-            {memoryFiles.length === 0 ? (
-              <Text dimColor>нет</Text>
-            ) : (
-              <Text>
-                {memoryFiles.length} {plural(memoryFiles.length, 'файл', 'файла', 'файлов')}
-              </Text>
-            )}
-            {memoryFiles.length === 0 ? null : <Text dimColor>· ~{formatTokens(memoryTokens)} токенов</Text>}
-          </Box>
+          {rateLimits.length === 0
+            ? column('limits', 'ПОДПИСКА', [<Text dimColor>после первого ответа</Text>])
+            : rateLimits.map((limit: SessionRateLimit) => {
+                const left = formatLeft(limit.resetsAt, now)
+
+                return column(`limit-${limit.kind}`, LIMIT_LABELS[limit.kind] ?? limit.kind.toUpperCase(), [
+                  percentText(limit.percentUsed),
+                  bar(`limit-${limit.kind}-bar`, limit.percentUsed, `${limit.kind}: ${limit.percentUsed}%`),
+                  left ? <Text dimColor>↻ {left}</Text> : null,
+                ])
+              })}
         </Box>
-        <Box key="subscription" flexDirection="column">
-          {rateLimits.length === 0 ? (
-            <Text dimColor>лимиты подписки — после первого ответа</Text>
-          ) : (
-            rateLimits.map(limitRow)
-          )}
-        </Box>
+        {others}
       </Box>
     )
   })

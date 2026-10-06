@@ -56,17 +56,24 @@ test('formatting', () => {
 test('band: context, memory and limits on terminal and desktop', async ($, on) => {
   mock.clock(on, { now: NOW })
   on('session.usage', () => ({ value: USAGE }))
+  // A "neighbour mod" renders below the band: its line must stay visible.
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+    const { Text } = $.ui.resolve(e)
+
+    return <Text>neighbour mod</Text>
+  })
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'usage-band', surface, ...BAND })
     expect(await ui.find({ type: 'Text', text: '42%' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: '· 84k / 200k' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '84k/200k' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '2 files' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /~2k tokens/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '~2k tok.' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '24%' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: 'limit 5h' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /resets in 2h 15m/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '5 HOURS' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '↻ 2h 15m' })).toBeDefined()
     expect((await ui.find({ type: 'Text', text: '91%' }))?.props.color).toBe('#f85149')
+    expect(await ui.find({ type: 'Text', text: 'neighbour mod' })).toBeDefined()
     const bars =
       surface === 'desktop' ? await ui.findAll({ type: 'Svg' }) : await ui.findAll({ type: 'Text', text: /━/ })
     expect(bars).toHaveLength(3)
@@ -77,10 +84,16 @@ test('band: context, memory and limits on terminal and desktop', async ($, on) =
 test('before the first reply: clear placeholders', async ($, on) => {
   mock.clock(on, { now: NOW })
   on('session.usage', () => ({ value: { startedAt: NOW, context: { window: 200_000 }, rateLimits: [] } }))
+  // A "neighbour mod" renders below the band: its line must stay visible.
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+    const { Text } = $.ui.resolve(e)
+
+    return <Text>neighbour mod</Text>
+  })
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'usage-band', surface, ...BAND })
-    expect(await ui.find({ type: 'Text', text: /subscription limits — after the first reply/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'SUBSCRIPTION' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'none' })).toBeDefined()
     await ui.unmount()
   }

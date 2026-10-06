@@ -56,6 +56,8 @@ declare module 'claude-code' {
       isHistoryOpen: boolean
       /** Идёт ли сейчас ход Claude. */
       isWorking: boolean
+      /** Где показывать карту: боковой панелью или полосой под чатом, над полем ввода. */
+      placement: 'pane' | 'band'
     }
   }
 }

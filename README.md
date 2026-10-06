@@ -19,8 +19,8 @@ Every mod ships in English ([`en/`](en)) and Russian ([`ru/`](ru)). Pick one lan
 **usage-band** — above the prompt:
 
 ```
-━━━━────── 42% context · 84k / 200k       ━━──────── 24% limit 5h · resets in 2h 15m
-memory: 2 files · ~2k tokens               ━━━━━━━━━─ 91% weekly limit · resets in 3d 4h
+CONTEXT                  MEMORY               5 HOURS                   WEEK
+42% ━━━━──── 84k/200k    2 files ~2k tok.     24% ━━────── ↻ 2h 15m     91% ━━━━━━━─ ↻ 3d 4h
 ```
 
 **roadmap** — the Roadmap pane:
@@ -127,6 +127,7 @@ claude --plugin-dir ~/claude-mode/en/usage-band --plugin-dir ~/claude-mode/en/ro
 | --- | --- |
 | `/roadmap` | Open the Roadmap pane |
 | `/roadmap reset` | Start a new task; the current one moves to "Earlier" |
+| `/roadmap band` · `/roadmap pane` | Move the roadmap under the chat (above the prompt) or back to its pane |
 | `/branches` | Open the Branches pane |
 | `/branches fetch` | Run `git fetch --all --prune`, then refresh |
 | `/inspector` | Open the context inspector and recount |

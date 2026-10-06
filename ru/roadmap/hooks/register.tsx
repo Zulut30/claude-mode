@@ -53,6 +53,27 @@ const isDetailed = atom({ plugin: 'roadmap', key: 'isDetailed' } as const, false
 const history = atom({ plugin: 'roadmap', key: 'history' } as const, [] as PastTask[])
 const isHistoryOpen = atom({ plugin: 'roadmap', key: 'isHistoryOpen' } as const, false)
 const isWorking = atom({ plugin: 'roadmap', key: 'isWorking' } as const, false)
+const placement = atom({ plugin: 'roadmap', key: 'placement' } as const, 'pane' as 'pane' | 'band')
+
+/** Короткие названия этапов для полосы под чатом. */
+const SHORT_TITLES: Record<StageId, string> = {
+  context: 'Контекст',
+  work: 'Выполнение',
+  check: 'Проверка',
+  test: 'Тест',
+  push: 'Пуш',
+  deploy: 'Деплой',
+}
+
+/** Перенести карту: в боковую панель или полосой под чат. */
+const moveTo = async ($: EngineInterface, where: 'pane' | 'band') => {
+  await update($, placement, () => where)
+  if (where === 'pane') {
+    await $.ui.open({ id: PANE, title: TITLE })
+  } else {
+    await $.ui.close({ id: PANE })
+  }
+}
 
 /** Статус задачи для шапки: работает, готово или есть ошибка. */
 export const taskStatus = (current: Roadmap, found: Project, working: boolean) => {
@@ -560,23 +581,34 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'roadmap',
-      description: 'Открыть дорожную карту задачи (`/roadmap reset` — начать заново)',
+      description: 'Открыть дорожную карту (`/roadmap reset` — новая задача, `/roadmap band` — под чат, `/roadmap pane` — в панель)',
     })
     // Раз в 30 с — чтобы время текущего шага шло.
     $.clock.every(30_000, () => $.ui.invalidate('ui.render'))
     await refreshProject($).catch(() => undefined)
-    void $.ui.open({ id: PANE, title: TITLE })
+    if ((await read($, placement)) === 'pane') {
+      void $.ui.open({ id: PANE, title: TITLE })
+    }
 
     return next(e)
   })
 
   on('command.run', { command: 'roadmap' }, async ($, e) => {
-    const isReset = e.args.trim() === 'reset'
+    const arg = e.args.trim()
+    if (arg === 'band' || arg === 'pane') {
+      await moveTo($, arg)
+
+      return { text: arg === 'band' ? 'Дорожная карта теперь под чатом, над полем ввода.' : 'Дорожная карта снова в панели.' }
+    }
+
+    const isReset = arg === 'reset'
     if (isReset) {
       await startNewTask($, '')
     }
 
-    await $.ui.open({ id: PANE, title: TITLE })
+    if ((await read($, placement)) === 'pane') {
+      await $.ui.open({ id: PANE, title: TITLE })
+    }
 
     return { text: isReset ? 'Дорожная карта: новая задача.' : 'Дорожная карта открыта.' }
   })
@@ -776,6 +808,7 @@ export const register: Register = on => {
         <Box key="actions" flexDirection="row" columnGap={1} marginTop={1}>
           <Button key="details" label={detailed ? 'Кратко' : 'Подробно'} onPress={() => update($, isDetailed, value => !value)} />
           <Button key="reset" label="Новая задача" onPress={() => startNewTask($, '')} />
+          <Button key="to-band" label="⬇ Под чат" onPress={() => moveTo($, 'band')} />
         </Box>
 
         {past.length === 0 ? null : (
@@ -800,6 +833,82 @@ export const register: Register = on => {
               : null}
           </Box>
         )}
+      </Box>
+    )
+  })
+
+  // Карта «под чатом»: две строки над полем ввода — задача и цепочка этапов.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const others = await next(e)
+    if (e.props.hasSurvey || (await read($, placement)) !== 'band') {
+      return others
+    }
+
+    const current = normalize(await read($, map))
+    if (!current.task && !hasActivity(current)) {
+      return others
+    }
+
+    const elements = $.ui.resolve(e)
+    const { Box, Text, Button } = elements
+    const Svg = e.surface !== 'terminal' && 'Svg' in elements ? elements.Svg : undefined
+    const found = await read($, project)
+    const status = taskStatus(current, found, await read($, isWorking))
+    const now = await $.clock.now()
+    const stages = visibleStages(current, found)
+    const lastStarted = stages.reduce((at, { id }, index) => (current.stages[id].status === 'pending' ? at : index), -1)
+    const total = current.startedAt === undefined ? '' : formatDuration(now - current.startedAt)
+    const room = Math.max(16, e.props.bodyColumns - 4)
+
+    const icon = (mark: Mark) =>
+      Svg ? (
+        <Svg source={iconSvg(mark, 12)} alt={MARKS[mark].alt} width={12} height={LINE_PX} />
+      ) : (
+        <Text color={MARKS[mark].color} dimColor={!MARKS[mark].color}>
+          {MARKS[mark].glyph}
+        </Text>
+      )
+
+    const right = [status?.text, total].filter(Boolean).join(' · ')
+
+    return (
+      <Box flexDirection="column">
+        <Box key="roadmap-band" flexDirection="column">
+          <Box key="roadmap-band-top" flexDirection="row" justifyContent="space-between" columnGap={1}>
+            <Box key="roadmap-band-task" flexDirection="row" alignItems="center" columnGap={1}>
+              {status ? icon(status.mark) : null}
+              <Text bold>{short(current.task || 'Задача', room - right.length - 12)}</Text>
+            </Box>
+            <Box key="roadmap-band-right" flexDirection="row" alignItems="center" columnGap={1}>
+              {right ? <Text color={status?.color} dimColor={!status}>{right}</Text> : null}
+              <Button key="to-pane" plain dimColor label="⤢ Панель" onPress={() => moveTo($, 'pane')} />
+            </Box>
+          </Box>
+          <Box key="roadmap-band-steps" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={1}>
+            {stages.map(({ id }, index) => {
+              const stage = current.stages[id]
+              const isSkipped = stage.status === 'pending' && index < lastStarted
+              const mark: Mark = isSkipped ? 'skipped' : stage.status
+              const time = stage.status === 'active' ? timeLabel(stage, now) : ''
+
+              return (
+                <Box key={`band-${id}`} flexDirection="row" alignItems="center" columnGap={1}>
+                  {index > 0 ? <Text dimColor>›</Text> : null}
+                  {icon(mark)}
+                  <Text
+                    bold={stage.status === 'active'}
+                    color={stage.status === 'active' ? BLUE : stage.status === 'failed' ? RED : undefined}
+                    dimColor={stage.status === 'pending' || isSkipped}
+                  >
+                    {SHORT_TITLES[id]}
+                    {time ? ` ${time}` : ''}
+                  </Text>
+                </Box>
+              )
+            })}
+          </Box>
+        </Box>
+        {others}
       </Box>
     )
   })

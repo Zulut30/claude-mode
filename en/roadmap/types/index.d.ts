@@ -56,6 +56,8 @@ declare module 'claude-code' {
       isHistoryOpen: boolean
       /** Whether Claude's turn is running right now. */
       isWorking: boolean
+      /** Where to show the roadmap: as a side pane or as a band under the chat, above the prompt. */
+      placement: 'pane' | 'band'
     }
   }
 }

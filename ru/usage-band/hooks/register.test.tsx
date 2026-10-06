@@ -62,17 +62,23 @@ test('форматирование', () => {
 test('полоса: контекст, память и лимиты на terminal и desktop', async ($, on) => {
   mock.clock(on, { now: NOW })
   on('session.usage', () => ({ value: USAGE }))
+  // Под полосой рисует «соседний мод»: его строка должна остаться видна.
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+    const { Text } = $.ui.resolve(e)
+
+    return <Text>соседний мод</Text>
+  })
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'usage-band', surface, ...BAND })
     expect(await ui.find({ type: 'Text', text: '42%' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: '· 84k / 200k' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '84k/200k' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '2 файла' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /~2k токенов/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '24%' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: 'лимит 5 ч' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /сброс через 2 ч 15 мин/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '5 ЧАСОВ' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '↻ 3 д 4 ч' })).toBeDefined()
     expect((await ui.find({ type: 'Text', text: '91%' }))?.props.color).toBe('#f85149')
+    expect(await ui.find({ type: 'Text', text: 'соседний мод' })).toBeDefined()
     const bars =
       surface === 'desktop' ? await ui.findAll({ type: 'Svg' }) : await ui.findAll({ type: 'Text', text: /━/ })
     expect(bars).toHaveLength(3)
@@ -83,10 +89,16 @@ test('полоса: контекст, память и лимиты на terminal
 test('до первого ответа — понятные заглушки', async ($, on) => {
   mock.clock(on, { now: NOW })
   on('session.usage', () => ({ value: { startedAt: NOW, context: { window: 200_000 }, rateLimits: [] } }))
+  // Под полосой рисует «соседний мод»: его строка должна остаться видна.
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+    const { Text } = $.ui.resolve(e)
+
+    return <Text>соседний мод</Text>
+  })
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'usage-band', surface, ...BAND })
-    expect(await ui.find({ type: 'Text', text: /лимиты подписки — после первого ответа/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'ПОДПИСКА' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'нет' })).toBeDefined()
     await ui.unmount()
   }
