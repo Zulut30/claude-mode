@@ -1,0 +1,11 @@
+{
+  "name": "git-branches",
+  "version": "0.1.0",
+  "description": "GitLens-style Branches pane: local and remote branches, ahead/behind, working-tree changes, GitHub pull requests and recent commits",
+  "author": {
+    "name": "Zulut30",
+    "url": "https://github.com/Zulut30"
+  },
+  "homepage": "https://github.com/Zulut30/claude-mode",
+  "types": "./types/index.d.ts"
+}

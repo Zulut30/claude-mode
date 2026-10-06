@@ -1,0 +1,10 @@
+{
+  "name": "usage-band",
+  "version": "0.1.0",
+  "description": "Полоса над полем ввода: заполнение контекста, файлы памяти и расход лимитов подписки (5ч / 7д)",
+  "author": {
+    "name": "Zulut30",
+    "url": "https://github.com/Zulut30"
+  },
+  "homepage": "https://github.com/Zulut30/claude-mode"
+}

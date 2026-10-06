@@ -1,0 +1,11 @@
+{
+  "name": "git-branches",
+  "version": "0.1.0",
+  "description": "Панель «Ветки» в духе GitLens: локальные и удалённые ветки, опережение/отставание, изменения, pull request'ы GitHub и последние коммиты",
+  "author": {
+    "name": "Zulut30",
+    "url": "https://github.com/Zulut30"
+  },
+  "homepage": "https://github.com/Zulut30/claude-mode",
+  "types": "./types/index.d.ts"
+}

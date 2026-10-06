@@ -1,0 +1,11 @@
+{
+  "name": "roadmap",
+  "version": "0.1.0",
+  "description": "Roadmap pane: task stages top to bottom (context → implementation → checks → tests → push → deploy), marked automatically from Claude's actions",
+  "author": {
+    "name": "Zulut30",
+    "url": "https://github.com/Zulut30"
+  },
+  "homepage": "https://github.com/Zulut30/claude-mode",
+  "types": "./types/index.d.ts"
+}

@@ -1,0 +1,10 @@
+{
+  "name": "usage-band",
+  "version": "0.1.0",
+  "description": "Band above the prompt: context fill, memory files and subscription limit usage (5h / 7d)",
+  "author": {
+    "name": "Zulut30",
+    "url": "https://github.com/Zulut30"
+  },
+  "homepage": "https://github.com/Zulut30/claude-mode"
+}
