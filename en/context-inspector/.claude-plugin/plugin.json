@@ -1,0 +1,8 @@
+{
+  "name": "context-inspector",
+  "version": "0.1.0",
+  "description": "Context pane: what fills the context window, which MCP servers, skills and memory files use it, and what you can free up",
+  "author": { "name": "Zulut30", "url": "https://github.com/Zulut30" },
+  "homepage": "https://github.com/Zulut30/claude-mode",
+  "types": "./types/index.d.ts"
+}

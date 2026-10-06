@@ -1,6 +1,6 @@
 # claude-mode
 
-Four mods for **Claude Code** — the desktop app's Code tab and the terminal. Each mod is its own folder: install only the ones you want.
+Five mods for **Claude Code** — the desktop app's Code tab and the terminal. Each mod is its own folder: install only the ones you want.
 
 [Русская версия →](README.ru.md)
 
@@ -9,6 +9,7 @@ Four mods for **Claude Code** — the desktop app's Code tab and the terminal. E
 | 📊 | [**usage-band**](en/usage-band) | Context window fill, loaded memory files and subscription limits (5-hour and weekly) | A band above the prompt |
 | 🗺️ | [**roadmap**](en/roadmap) | The stages of the current task: context → implementation → checks → tests → push → deploy | A **Roadmap** pane |
 | 🌿 | [**git-branches**](en/git-branches) | Branches, sync with the remote, GitHub pull requests and commits, GitLens-style | A **Branches** pane |
+| 🧭 | [**context-inspector**](en/context-inspector) | What fills the context window: categories, MCP servers, skills, memory and tips on what to free up | A **Context** pane |
 | ⚡ | [**token-speed**](en/token-speed) | The model's response speed in tokens per second | The status line under the prompt |
 
 Every mod ships in English ([`en/`](en)) and Russian ([`ru/`](ru)). Pick one language per mod — both versions use the same plugin name.
@@ -62,6 +63,23 @@ COMMITS · main · 8
 │ a1b2c3d fix: header                                    3h
 ```
 
+**context-inspector** — the Context pane:
+
+```
+CONTEXT · claude-opus-5-5                          [ ↻ Refresh ]
+84k of 200k · 42%
+████████▓▓▓▓▒▒▒░░░░░░░░░░░░░░░░░░░░░░░
+
+• MCP server “supabase” takes 10k (2 tools) — disable it in /mcp if you don't need it
+
+WHAT FILLS IT
+● Messages                                     55k · 28%
+● System tools                                 14k · 7%
+MCP SERVERS · 3
+● supabase                                   2 tools · 10k
+◌ vercel                                       2 on demand
+```
+
 **token-speed** — under the prompt:
 
 ```
@@ -86,7 +104,7 @@ git clone https://github.com/Zulut30/claude-mode.git ~/claude-mode
 ```json
 {
   "env": {
-    "CLAUDE_CODE_PLUGIN_DIRS": "/Users/you/claude-mode/en/usage-band:/Users/you/claude-mode/en/roadmap:/Users/you/claude-mode/en/git-branches:/Users/you/claude-mode/en/token-speed"
+    "CLAUDE_CODE_PLUGIN_DIRS": "/Users/you/claude-mode/en/usage-band:/Users/you/claude-mode/en/roadmap:/Users/you/claude-mode/en/git-branches:/Users/you/claude-mode/en/context-inspector:/Users/you/claude-mode/en/token-speed"
   }
 }
 ```
@@ -96,7 +114,7 @@ On Windows: `"C:\\Users\\you\\claude-mode\\en\\usage-band;C:\\Users\\you\\claude
 *Terminal only, for one run:*
 
 ```bash
-claude --plugin-dir ~/claude-mode/en/usage-band --plugin-dir ~/claude-mode/en/roadmap --plugin-dir ~/claude-mode/en/git-branches --plugin-dir ~/claude-mode/en/token-speed
+claude --plugin-dir ~/claude-mode/en/usage-band --plugin-dir ~/claude-mode/en/roadmap --plugin-dir ~/claude-mode/en/git-branches --plugin-dir ~/claude-mode/en/context-inspector --plugin-dir ~/claude-mode/en/token-speed
 ```
 
 **3. Restart the app** or open a new session.
@@ -111,8 +129,9 @@ claude --plugin-dir ~/claude-mode/en/usage-band --plugin-dir ~/claude-mode/en/ro
 | `/roadmap reset` | Start a new task; the current one moves to "Earlier" |
 | `/branches` | Open the Branches pane |
 | `/branches fetch` | Run `git fetch --all --prune`, then refresh |
+| `/inspector` | Open the context inspector and recount |
 
-The usage band and token speed need no command. The Roadmap pane opens by itself when a session starts, the Branches pane opens by itself in a git project.
+The usage band and token speed need no command. The Roadmap and Context panes open by themselves when a session starts, the Branches pane opens by itself in a git project.
 
 ## What the mods read and run
 
@@ -123,6 +142,7 @@ The mods run inside Claude Code and send nothing to third parties.
 | usage-band | Session figures from Claude Code: context, memory, limits | — | none |
 | roadmap | Your prompts (for the task title) and Claude's tool calls in the session; whether files like `package.json` or `vercel.json` exist in the project | `git rev-parse` | none |
 | git-branches | The state of the repository in the session folder | `git for-each-ref`, `git status`, `git log`, `git remote`; `gh pr list`; `git fetch` only when you press **Fetch** | `gh` calls GitHub as your account; `fetch` talks to your remote |
+| context-inspector | The context breakdown from Claude Code (a local estimate, like `/context`) | — | none |
 | token-speed | The model's response stream (counts characters and tokens) | — | none |
 
 Mod state lives in the Claude Code session; nothing is written to disk.

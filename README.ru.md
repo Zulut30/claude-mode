@@ -1,6 +1,6 @@
 # claude-mode
 
-Четыре мода для **Claude Code**: вкладка Code в десктопном приложении и терминал. Каждый мод — отдельная папка, ставьте только нужные.
+Пять модов для **Claude Code**: вкладка Code в десктопном приложении и терминал. Каждый мод — отдельная папка, ставьте только нужные.
 
 [English version →](README.md)
 
@@ -9,6 +9,7 @@
 | 📊 | [**usage-band**](ru/usage-band) | Заполнение контекста, файлы памяти и лимиты подписки (5 часов и неделя) | Полоса над полем ввода |
 | 🗺️ | [**roadmap**](ru/roadmap) | Этапы текущей задачи: контекст → выполнение → проверка → тест → пуш → деплой | Панель «Дорожная карта» |
 | 🌿 | [**git-branches**](ru/git-branches) | Ветки, синхронизация с сервером, pull request’ы GitHub и коммиты, в духе GitLens | Панель «Ветки» |
+| 🧭 | [**context-inspector**](ru/context-inspector) | Из чего состоит контекстное окно: категории, MCP-серверы, скиллы, память и советы, что освободить | Панель «Контекст» |
 | ⚡ | [**token-speed**](ru/token-speed) | Скорость ответа модели в токенах в секунду | Строка под полем ввода |
 
 Каждый мод есть на русском ([`ru/`](ru)) и английском ([`en/`](en)). Для одного мода выбирайте один язык: имена у версий совпадают.
@@ -62,6 +63,23 @@ PULL REQUESTS · 1
 │ a1b2c3d fix: шапка                                    3 ч
 ```
 
+**context-inspector** — панель «Контекст»:
+
+```
+КОНТЕКСТ · claude-opus-5-5                       [ ↻ Обновить ]
+84k из 200k · 42%
+████████▓▓▓▓▒▒▒░░░░░░░░░░░░░░░░░░░░░░░
+
+• MCP-сервер «supabase» занимает 10k (2 инструмента) — если не нужен, отключите в /mcp
+
+ИЗ ЧЕГО СОСТОИТ
+● Сообщения                                    55k · 28%
+● Системные инструменты                        14k · 7%
+MCP-СЕРВЕРЫ · 3
+● supabase                                  2 инстр. · 10k
+◌ vercel                                       2 по запросу
+```
+
 **token-speed** — под полем ввода:
 
 ```
@@ -86,7 +104,7 @@ git clone https://github.com/Zulut30/claude-mode.git ~/claude-mode
 ```json
 {
   "env": {
-    "CLAUDE_CODE_PLUGIN_DIRS": "C:\\Users\\you\\claude-mode\\ru\\usage-band;C:\\Users\\you\\claude-mode\\ru\\roadmap;C:\\Users\\you\\claude-mode\\ru\\git-branches;C:\\Users\\you\\claude-mode\\ru\\token-speed"
+    "CLAUDE_CODE_PLUGIN_DIRS": "C:\\Users\\you\\claude-mode\\ru\\usage-band;C:\\Users\\you\\claude-mode\\ru\\roadmap;C:\\Users\\you\\claude-mode\\ru\\git-branches;C:\\Users\\you\\claude-mode\\ru\\context-inspector;C:\\Users\\you\\claude-mode\\ru\\token-speed"
   }
 }
 ```
@@ -94,7 +112,7 @@ git clone https://github.com/Zulut30/claude-mode.git ~/claude-mode
 *Только терминал, на один запуск:*
 
 ```bash
-claude --plugin-dir ~/claude-mode/ru/usage-band --plugin-dir ~/claude-mode/ru/roadmap --plugin-dir ~/claude-mode/ru/git-branches --plugin-dir ~/claude-mode/ru/token-speed
+claude --plugin-dir ~/claude-mode/ru/usage-band --plugin-dir ~/claude-mode/ru/roadmap --plugin-dir ~/claude-mode/ru/git-branches --plugin-dir ~/claude-mode/ru/context-inspector --plugin-dir ~/claude-mode/ru/token-speed
 ```
 
 **3. Перезапустите приложение** или откройте новую сессию.
@@ -109,8 +127,9 @@ claude --plugin-dir ~/claude-mode/ru/usage-band --plugin-dir ~/claude-mode/ru/ro
 | `/roadmap reset` | Начать новую задачу; текущая уйдёт в «Ранее» |
 | `/branches` | Открыть панель веток |
 | `/branches fetch` | Выполнить `git fetch --all --prune` и обновить панель |
+| `/inspector` | Открыть инспектор контекста и пересчитать |
 
-Полоса лимитов и скорость токенов работают сами, без команд. Дорожная карта открывается сама при старте сессии, панель веток — сама в git-проекте.
+Полоса лимитов и скорость токенов работают сами, без команд. Дорожная карта и инспектор контекста открываются сами при старте сессии, панель веток — сама в git-проекте.
 
 ## Что моды читают и запускают
 
@@ -121,6 +140,7 @@ claude --plugin-dir ~/claude-mode/ru/usage-band --plugin-dir ~/claude-mode/ru/ro
 | usage-band | Цифры сессии из Claude Code: контекст, память, лимиты | — | нет |
 | roadmap | Ваши запросы (для названия задачи) и вызовы инструментов Claude в сессии; есть ли в проекте файлы вроде `package.json`, `vercel.json` | `git rev-parse` | нет |
 | git-branches | Состояние репозитория в папке сессии | `git for-each-ref`, `git status`, `git log`, `git remote`; `gh pr list`; `git fetch` — только по кнопке **Fetch** | `gh` обращается к GitHub от вашего аккаунта; `fetch` — к вашему remote |
+| context-inspector | Разбивку контекста от Claude Code (локальная оценка, как `/context`) | — | нет |
 | token-speed | Поток ответа модели (считает символы и токены) | — | нет |
 
 Состояние модов живёт в сессии Claude Code; на диск они ничего не пишут.
