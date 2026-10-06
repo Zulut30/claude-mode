@@ -1,6 +1,9 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 
 import {
+  taskStatus,
+  isPersonPrompt,
+  taskTitle,
   describeCommand,
   isContinuation,
   summarize,
@@ -174,10 +177,12 @@ test('панель: стадии, план, новая задача по нов�
   await call({ tool: 'Edit', file_path: 'C:/p/src/app.ts', old_string: 'a', new_string: 'b' })
   await call({ tool: 'Bash', command: 'X="C:/p"; cd "$X" && npm test' })
   await $.prompt.submit(PROMPT('давай'))
+  await $.prompt.submit({ text: '<agent-message from="a1"> [Subagent hand-back] отчёт', wait: false, origin: { kind: 'peer' } } as never)
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'roadmap', surface, ...PANE })
     expect(await ui.find({ type: 'Text', text: 'сделай страницу входа' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'Claude работает' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /прочитано 1 файл/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '1 файл: app.ts' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'Нарисовать панель' })).toBeDefined()
@@ -202,4 +207,47 @@ test('панель: стадии, план, новая задача по нов�
   await ui.press({ key: 'reset' })
   expect(await ui.find({ type: 'Text', text: 'Появится с вашим следующим запросом' })).toBeDefined()
   await ui.unmount()
+})
+
+describe('точность', () => {
+  test('сообщения агентов и служебные вставки — не задачи', () => {
+    expect(isPersonPrompt('composer', 'сделай панель')).toBe(true)
+    expect(isPersonPrompt('sdk', 'сделай панель')).toBe(true)
+    expect(isPersonPrompt('peer', 'сделай панель')).toBe(false)
+    expect(isPersonPrompt('composer', '<agent-message from="a1"> отчёт')).toBe(false)
+    expect(isPersonPrompt('composer', '/roadmap')).toBe(false)
+  })
+
+  test('название задачи — первая строка, не длиннее ~90 символов', () => {
+    expect(taskTitle('сделай панель\nи ещё вторую строку')).toBe('сделай панель')
+    const long = taskTitle('сделай чтобы задачи в этой панели были более адаптивные и также сделай мод похожий на расширение git lens')
+    expect(long.length).toBeLessThanOrEqual(91)
+    expect(long.endsWith('…')).toBe(true)
+  })
+
+  test('коммит со словом deploy в тексте — это пуш, а не деплой', () => {
+    const script = 'git add -A && git commit -q -F - <<\'EOF\'\nAdd mods\n- roadmap: deploy stage\nEOF\ngit push -u origin main'
+    expect(classify({ tool: 'Bash', command: script })?.stage).toBe('push')
+    expect(classify({ tool: 'Bash', command: 'git commit -m "prepare deploy to vercel"' })?.stage).toBe('push')
+    expect(classify({ tool: 'Bash', command: 'npx vercel --prod' })?.stage).toBe('deploy')
+    expect(classify({ tool: 'Bash', command: 'npm run deploy' })?.stage).toBe('deploy')
+  })
+
+  test('команды чтения — подготовка контекста', () => {
+    expect(classify({ tool: 'Bash', command: 'gh repo view Zulut30/claude-mode --json name' })?.stage).toBe('context')
+    expect(classify({ tool: 'Bash', command: 'cat vercel.json' })?.stage).toBe('context')
+    expect(classify({ tool: 'Bash', command: 'cd app && git status --short && ls -la | head -5' })?.stage).toBe('context')
+    expect(classify({ tool: 'Bash', command: 'mkdir -p out && cp a b' })?.stage).toBe('work')
+  })
+})
+
+describe('статус задачи', () => {
+  test('работает / ошибка / готово / пусто', () => {
+    expect(taskStatus(emptyMap(), NO_PROJECT, false)).toBeNull()
+    const map = startStep({ ...emptyMap(), task: 'X' }, { stage: 'work', last: 'правка a' }, 0)
+    expect(taskStatus(map, NO_PROJECT, true)?.text).toBe('Claude работает')
+    expect(taskStatus(closeTurn(map, 1), NO_PROJECT, false)?.text).toBe('Готово · ждёт вас')
+    const test = { stage: 'test', last: 'npm test' } as const
+    expect(taskStatus(finishStep(startStep(map, test, 2), test, true, 3), NO_PROJECT, false)?.text).toBe('Есть ошибка')
+  })
 })

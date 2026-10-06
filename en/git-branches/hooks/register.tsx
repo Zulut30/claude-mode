@@ -13,7 +13,7 @@ const BLUE = '#58a6ff'
 
 const snapshot = atom({ plugin: 'git-branches', key: 'snapshot' } as const, null)
 const isLoading = atom({ plugin: 'git-branches', key: 'isLoading' } as const, false)
-const collapsed = atom({ plugin: 'git-branches', key: 'collapsed' } as const, ['remote'] as SectionId[])
+const expanded = atom({ plugin: 'git-branches', key: 'expanded' } as const, [] as SectionId[])
 
 // ── Parsing git and gh output ────────────────────────────────────────────
 
@@ -261,21 +261,74 @@ const fetchAll = async ($: EngineInterface) => {
 
 // ── Rendering ────────────────────────────────────────────────────────────
 
-const CHECK_MARKS: Record<Checks, { glyph: string; color?: string; text: string }> = {
-  passing: { glyph: '✓', color: GREEN, text: 'checks passed' },
-  failing: { glyph: '✗', color: RED, text: 'checks failed' },
-  pending: { glyph: '●', color: AMBER, text: 'checks running' },
-  none: { glyph: '', text: '' },
+const GRAY = '#8b949e'
+
+/** Height of a text line on desktop, in pixels: icons use it to line up with the text. */
+const LINE_PX = 20
+
+/** How many rows a section shows until it is expanded. */
+const SECTION_LIMIT = 5
+
+type Mark = 'current' | 'branch' | 'remote' | 'pr' | 'draft' | 'passing' | 'failing' | 'running' | 'commit'
+
+const MARKS: Record<Mark, { glyph: string; color?: string; alt: string }> = {
+  current: { glyph: '●', color: GREEN, alt: 'current branch' },
+  branch: { glyph: '○', alt: 'branch' },
+  remote: { glyph: '◌', color: BLUE, alt: 'branch on remote' },
+  pr: { glyph: '○', color: BLUE, alt: 'pull request' },
+  draft: { glyph: '◌', alt: 'draft' },
+  passing: { glyph: '✓', color: GREEN, alt: 'checks passed' },
+  failing: { glyph: '✗', color: RED, alt: 'checks failed' },
+  running: { glyph: '●', color: AMBER, alt: 'checks running' },
+  commit: { glyph: '•', alt: 'commit' },
+}
+
+const PR_MARKS: Record<Checks, Mark> = { passing: 'passing', failing: 'failing', pending: 'running', none: 'pr' }
+
+/** Icons in the same style as the roadmap; a commit gets a line, like the GitLens graph. */
+const iconSvg = (mark: Mark, size: number) => {
+  const ring = (color: string, extra = '') =>
+    `<circle cx="8" cy="8" r="5.8" fill="none" stroke="${color}" stroke-width="1.7"${extra}/>`
+  const body: Record<Mark, string> = {
+    current: `<circle cx="8" cy="8" r="6.4" fill="${GREEN}"/><circle cx="8" cy="8" r="2.4" fill="#fff"/>`,
+    branch: ring(GRAY, ' stroke-opacity=".8"'),
+    remote: ring(BLUE, ' stroke-dasharray="2.4 1.8"'),
+    pr: ring(BLUE),
+    draft: ring(GRAY, ' stroke-dasharray="2.4 1.8" stroke-opacity=".8"'),
+    passing:
+      `<circle cx="8" cy="8" r="7" fill="${GREEN}"/>` +
+      `<path d="M4.9 8.2l2 2 4.2-4.4" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>`,
+    failing:
+      `<circle cx="8" cy="8" r="7" fill="${RED}"/>` +
+      `<path d="M5.7 5.7l4.6 4.6M10.3 5.7l-4.6 4.6" stroke="#fff" stroke-width="1.7" stroke-linecap="round"/>`,
+    running: `${ring(AMBER)}<circle cx="8" cy="8" r="2.6" fill="${AMBER}"/>`,
+    commit:
+      `<path d="M8 -20V4.6M8 11.4V36" stroke="${GRAY}" stroke-opacity=".45" stroke-width="1.4"/>` +
+      `<circle cx="8" cy="8" r="3.3" fill="none" stroke="${GRAY}" stroke-width="1.6"/>`,
+  }
+  const unitsHigh = (LINE_PX * 16) / size
+
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${LINE_PX}" ` +
+    `viewBox="0 ${(16 - unitsHigh) / 2} 16 ${unitsHigh}">${body[mark]}</svg>`
+  )
 }
 
 const SECTION_TITLES: Record<SectionId, string> = {
-  local: 'LOCAL BRANCHES',
+  local: 'BRANCHES',
   prs: 'PULL REQUESTS',
-  remote: 'REMOTE BRANCHES',
+  remote: 'ON REMOTE',
   commits: 'COMMITS',
 }
 
-const LIST_LIMIT = 15
+const short = (text: string, max: number) => {
+  const line = text.replace(/\s+/g, ' ').trim()
+
+  return line.length > max ? `${line.slice(0, Math.max(1, max - 1))}…` : line
+}
+
+/** '3h ago' → '3h': list rows do not need the 'ago'. */
+const ago = (unixSeconds: number, now: number) => relativeTime(unixSeconds, now).replace(/ ago$/, '')
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
@@ -307,14 +360,47 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Button, Link } = $.ui.resolve(e)
+    const elements = $.ui.resolve(e)
+    const { Box, Text, Button, Link } = elements
+    const Svg = e.surface !== 'terminal' && 'Svg' in elements ? elements.Svg : undefined
+
     const snap = await read($, snapshot)
     const loading = await read($, isLoading)
-    const folded = await read($, collapsed)
+    const open = await read($, expanded)
     const now = await $.clock.now()
+
     const columns = e.props.bodyColumns
     const narrow = columns < 44
-    const wide = columns >= 70
+    // Width of the text next to an icon. Texts are cut in advance: on desktop a long
+    // truncated line still takes up the height it would have if it wrapped.
+    const room = Math.max(16, columns - 4)
+
+    const icon = (mark: Mark, isSmall = false) =>
+      Svg ? (
+        <Svg source={iconSvg(mark, isSmall ? 12 : 16)} alt={MARKS[mark].alt} width={isSmall ? 12 : 16} height={LINE_PX} />
+      ) : (
+        <Text color={MARKS[mark].color} dimColor={!MARKS[mark].color}>
+          {MARKS[mark].glyph}
+        </Text>
+      )
+
+    /** A list row: icon, main text and short badges on the right; a note under the main text. */
+    const row = (key: string, mark: Mark, main: RenderChildren, right: RenderChildren, sub?: { text: string; color?: string }) => (
+      <Box key={key} flexDirection="row" columnGap={1}>
+        {icon(mark)}
+        <Box key={`${key}-body`} flexDirection="column" flexGrow={1} flexShrink={1}>
+          <Box key={`${key}-main`} flexDirection="row" justifyContent="space-between" columnGap={1}>
+            {main}
+            {right}
+          </Box>
+          {sub && !narrow ? (
+            <Text color={sub.color} dimColor={!sub.color}>
+              {short(sub.text, room)}
+            </Text>
+          ) : null}
+        </Box>
+      </Box>
+    )
 
     const toolbar = (
       <Box key="toolbar" flexDirection="row" columnGap={1} flexShrink={0}>
@@ -323,21 +409,17 @@ export const register: Register = on => {
       </Box>
     )
 
-    if (!snap) {
-      return (
-        <Box flexDirection="column" rowGap={1}>
-          <Text dimColor>{loading ? 'Reading the repository…' : 'No data yet. Press Refresh.'}</Text>
-          {toolbar}
-        </Box>
-      )
-    }
+    if (!snap || !snap.isRepo) {
+      const title = !snap ? (loading ? 'Reading the repository…' : 'No data yet') : 'No git repository here'
+      const hint = !snap
+        ? 'Press Refresh.'
+        : 'Open a session in a project folder that uses git to see branches, pull requests and commits.'
 
-    if (!snap.isRepo) {
       return (
         <Box flexDirection="column" rowGap={1}>
-          <Text bold>No git repository here</Text>
+          <Text bold>{title}</Text>
           <Text dimColor wrap="wrap">
-            Open a session in a project folder that uses git to see branches, PRs and commits.
+            {hint}
           </Text>
           {toolbar}
         </Box>
@@ -346,7 +428,8 @@ export const register: Register = on => {
 
     const web = snap.slug ? `https://github.com/${snap.slug}` : ''
     const prByBranch = new Map(snap.prs.map(pr => [pr.branch, pr]))
-    const currentBranch = snap.branches.find(branch => branch.isCurrent)
+    const current = snap.branches.find(branch => branch.isCurrent)
+    const others = snap.branches.filter(branch => !branch.isCurrent)
     const { staged, unstaged, untracked } = snap.changes
     const dirty = staged + unstaged + untracked
     const changeParts = [
@@ -355,167 +438,160 @@ export const register: Register = on => {
       untracked ? `${untracked} untracked` : '',
     ].filter(Boolean)
 
-    const toggle = (id: SectionId) =>
-      update($, collapsed, list => (list.includes(id) ? list.filter(one => one !== id) : [...list, id]))
+    const sync = !current
+      ? { text: '', color: undefined }
+      : !current.upstream
+        ? { text: 'not published', color: AMBER }
+        : current.ahead || current.behind
+          ? {
+              text: [current.ahead ? `↑${current.ahead} to push` : '', current.behind ? `↓${current.behind} to pull` : '']
+                .filter(Boolean)
+                .join(' · '),
+              color: current.behind ? AMBER : GREEN,
+            }
+          : { text: 'in sync', color: undefined }
 
-    const section = (id: SectionId, count: number, title: string, body: () => RenderChildren) => {
-      const isFolded = folded.includes(id)
+    const toggle = (id: SectionId) => update($, expanded, list => (list.includes(id) ? list.filter(one => one !== id) : [...list, id]))
+
+    /** A section: a text header, the first rows and a single 'More N' button when there are more. */
+    const section = (id: SectionId, title: string, rows: RenderChildren[], empty?: string) => {
+      const isOpen = open.includes(id)
+      const shown = isOpen ? rows : rows.slice(0, SECTION_LIMIT)
 
       return (
         <Box key={`section-${id}`} flexDirection="column" marginTop={1}>
-          <Button key={`toggle-${id}`} plain label={`${isFolded ? '▸' : '▾'} ${title}  ${count}`} onPress={() => toggle(id)} />
-          {isFolded ? null : body()}
+          <Text dimColor bold>
+            {title}
+            {rows.length ? ` · ${rows.length}` : ''}
+          </Text>
+          {rows.length === 0 && empty ? <Text dimColor>{empty}</Text> : null}
+          {shown}
+          {rows.length > SECTION_LIMIT ? (
+            <Button
+              key={`more-${id}`}
+              plain
+              dimColor
+              label={isOpen ? 'Collapse' : `More ${rows.length - SECTION_LIMIT}`}
+              onPress={() => toggle(id)}
+            />
+          ) : null}
         </Box>
       )
     }
 
-    const more = (key: string, hidden: number) =>
-      hidden > 0 ? (
-        <Box key={key}>
-          <Text dimColor>…and {hidden} more</Text>
-        </Box>
-      ) : null
-
     const branchRow = (branch: Branch) => {
       const pr = prByBranch.get(branch.name)
-      const check = pr ? CHECK_MARKS[pr.checks] : undefined
+      const badges = [
+        branch.ahead ? { text: `↑${branch.ahead}`, color: GREEN } : null,
+        branch.behind ? { text: `↓${branch.behind}`, color: AMBER } : null,
+        branch.isGone ? { text: 'not on remote', color: RED } : null,
+        !branch.upstream && !branch.isGone ? { text: 'local only', color: undefined } : null,
+        pr ? { text: `#${pr.number}`, color: BLUE } : null,
+        narrow ? null : { text: ago(branch.time, now), color: undefined },
+      ].filter((badge): badge is { text: string; color: string | undefined } => badge !== null)
+      const width = badges.reduce((sum, badge) => sum + badge.text.length + 1, 0)
+      const name = short(branch.name, room - width - 1)
       const href = web && branch.upstream && !branch.isGone ? `${web}/tree/${encodePath(branch.name)}` : ''
 
-      return (
-        <Box key={`local-${branch.name}`} flexDirection="column">
-          <Box key={`local-${branch.name}-head`} flexDirection="row" justifyContent="space-between" columnGap={1}>
-            <Box key={`local-${branch.name}-name`} flexDirection="row" columnGap={1} flexShrink={1}>
-              <Text color={branch.isCurrent ? GREEN : undefined} dimColor={!branch.isCurrent}>
-                {branch.isCurrent ? '●' : '○'}
-              </Text>
-              {href ? (
-                <Link href={href} label={branch.name} />
-              ) : (
-                <Text bold={branch.isCurrent} wrap="truncate-end">
-                  {branch.name}
-                </Text>
-              )}
-            </Box>
-            <Box key={`local-${branch.name}-badges`} flexDirection="row" columnGap={1} flexShrink={0}>
-              {branch.ahead ? <Text color={GREEN}>↑{branch.ahead}</Text> : null}
-              {branch.behind ? <Text color={AMBER}>↓{branch.behind}</Text> : null}
-              {branch.isGone ? <Text color={RED}>not on remote</Text> : null}
-              {!branch.upstream && !branch.isGone ? <Text dimColor>local only</Text> : null}
-              {pr ? <Text color={BLUE}>#{pr.number}</Text> : null}
-              {check?.glyph ? <Text color={check.color}>{check.glyph}</Text> : null}
-              {narrow ? null : <Text dimColor>{relativeTime(branch.time, now)}</Text>}
-            </Box>
-          </Box>
-          {narrow ? null : (
-            <Text dimColor wrap="truncate-end">
-              {'  '}
-              {branch.hash} {branch.subject}
-              {wide ? ` · ${branch.author}` : ''}
+      return row(
+        `local-${branch.name}`,
+        pr && pr.checks !== 'none' ? PR_MARKS[pr.checks] : 'branch',
+        href ? <Link href={href} label={name} /> : <Text>{name}</Text>,
+        <Box key={`local-${branch.name}-badges`} flexDirection="row" columnGap={1} flexShrink={0}>
+          {badges.map(badge => (
+            <Text color={badge.color} dimColor={!badge.color}>
+              {badge.text}
             </Text>
-          )}
-        </Box>
+          ))}
+        </Box>,
+        { text: `${branch.hash} ${branch.subject}` },
       )
     }
 
     const prRow = (pr: PullRequest) => {
-      const check = CHECK_MARKS[pr.checks]
-      const facts = [pr.branch, pr.isDraft ? 'draft' : '', check.text, pr.review].filter(Boolean).join(' · ')
+      const checks = { passing: 'checks passed', failing: 'checks failed', pending: 'checks running', none: '' }[pr.checks]
+      const facts = [pr.branch, pr.isDraft ? 'draft' : '', checks, pr.review].filter(Boolean).join(' · ')
+      const number = `#${pr.number}`
 
-      return (
-        <Box key={`pr-${pr.number}`} flexDirection="column">
-          <Box key={`pr-${pr.number}-head`} flexDirection="row" columnGap={1}>
-            <Text color={pr.isDraft ? undefined : BLUE} dimColor={pr.isDraft}>
-              #{pr.number}
-            </Text>
-            <Link href={pr.url} label={pr.title} />
-          </Box>
-          {narrow ? null : (
-            <Text color={pr.checks === 'failing' ? RED : undefined} dimColor={pr.checks !== 'failing'} wrap="truncate-end">
-              {'  '}
-              {facts}
-            </Text>
-          )}
-        </Box>
+      return row(
+        `pr-${pr.number}`,
+        pr.isDraft ? 'draft' : PR_MARKS[pr.checks],
+        <Link href={pr.url} label={short(pr.title, room - number.length - 1)} />,
+        <Text color={pr.isDraft ? undefined : BLUE} dimColor={pr.isDraft}>
+          {number}
+        </Text>,
+        { text: facts, color: pr.checks === 'failing' ? RED : undefined },
       )
     }
 
     const remoteRow = (branch: RemoteBranch) => {
-      const name = branch.name.replace(/^[^/]+\//, '')
+      const time = narrow ? '' : ago(branch.time, now)
+      const label = short(branch.name, room - time.length - 1)
+      const path = branch.name.replace(/^[^/]+\//, '')
+
+      return row(
+        `remote-${branch.name}`,
+        'remote',
+        web ? <Link href={`${web}/tree/${encodePath(path)}`} label={label} /> : <Text>{label}</Text>,
+        time ? <Text dimColor>{time}</Text> : null,
+        { text: `${branch.author} · ${branch.subject}` },
+      )
+    }
+
+    const commitRow = (commit: Commit) => {
+      const time = narrow ? '' : ago(commit.time, now)
+      const subject = short(commit.subject, room - commit.hash.length - time.length - 2)
 
       return (
-        <Box key={`remote-${branch.name}`} flexDirection="row" justifyContent="space-between" columnGap={1}>
-          <Box key={`remote-${branch.name}-name`} flexDirection="row" columnGap={1} flexShrink={1}>
-            <Text dimColor>☁</Text>
-            {web ? <Link href={`${web}/tree/${encodePath(name)}`} label={branch.name} /> : <Text wrap="truncate-end">{branch.name}</Text>}
+        <Box key={`commit-${commit.hash}`} flexDirection="row" columnGap={1}>
+          {icon('commit')}
+          <Box key={`commit-${commit.hash}-main`} flexDirection="row" justifyContent="space-between" columnGap={1} flexGrow={1} flexShrink={1}>
+            <Box key={`commit-${commit.hash}-text`} flexDirection="row" columnGap={1}>
+              {web ? <Link href={`${web}/commit/${commit.hash}`} label={commit.hash} /> : <Text color={AMBER}>{commit.hash}</Text>}
+              <Text>{subject}</Text>
+            </Box>
+            {time ? <Text dimColor>{time}</Text> : null}
           </Box>
-          {narrow ? null : <Text dimColor>{relativeTime(branch.time, now)}</Text>}
         </Box>
       )
     }
 
-    const commitRow = (commit: Commit) => (
-      <Box key={`commit-${commit.hash}`} flexDirection="row" justifyContent="space-between" columnGap={1}>
-        <Box key={`commit-${commit.hash}-text`} flexDirection="row" columnGap={1} flexShrink={1}>
-          {web ? (
-            <Link href={`${web}/commit/${commit.hash}`} label={commit.hash} />
-          ) : (
-            <Text color={AMBER}>{commit.hash}</Text>
-          )}
-          <Text wrap="truncate-end">{commit.subject}</Text>
-        </Box>
-        {narrow ? null : (
-          <Text dimColor>
-            {wide ? `${commit.author} · ` : ''}
-            {relativeTime(commit.time, now)}
-          </Text>
-        )}
-      </Box>
-    )
-
     return (
       <Box flexDirection="column">
-        <Box key="card" flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
-          <Box key="card-top" flexDirection="row" justifyContent="space-between" columnGap={1}>
-            {web ? <Link href={web} label={snap.slug} /> : <Text bold>{snap.root.split(/[\\/]/).pop()}</Text>}
+        <Box key="head" flexDirection="column">
+          <Box key="head-top" flexDirection="row" justifyContent="space-between" alignItems="center" columnGap={1}>
+            <Text bold>{short(snap.slug || snap.root.split(/[\\/]/).pop() || 'repository', room - 24)}</Text>
             {toolbar}
           </Box>
-          <Box key="card-branch" flexDirection="row" columnGap={1} flexWrap="wrap">
-            <Text color={GREEN}>●</Text>
-            <Text bold>{snap.current === 'HEAD' ? 'detached HEAD' : snap.current}</Text>
-            {currentBranch?.ahead ? <Text color={GREEN}>↑{currentBranch.ahead} to push</Text> : null}
-            {currentBranch?.behind ? <Text color={AMBER}>↓{currentBranch.behind} to pull</Text> : null}
+          <Box key="head-meta" flexDirection="row" columnGap={1}>
+            <Text dimColor>{loading ? 'refreshing…' : `updated ${relativeTime(Math.floor(snap.loadedAt / 1000), now)}`}</Text>
+            {web ? <Link href={web} label="open on GitHub" /> : null}
           </Box>
-          <Text color={dirty ? AMBER : GREEN} wrap="truncate-end">
-            {dirty ? `✎ ${changeParts.join(' · ')}` : '✓ working tree clean'}
-          </Text>
-          <Text dimColor>{loading ? 'refreshing…' : `updated ${relativeTime(Math.floor(snap.loadedAt / 1000), now)}`}</Text>
         </Box>
 
-        {section('local', snap.branches.length, SECTION_TITLES.local, () => [
-          ...snap.branches.slice(0, LIST_LIMIT).map(branchRow),
-          more('local-more', snap.branches.length - LIST_LIMIT),
-        ])}
+        <Box key="current" flexDirection="column" marginTop={1}>
+          {row(
+            'current-branch',
+            'current',
+            <Text bold>{short(snap.current === 'HEAD' ? 'detached HEAD' : snap.current, room - sync.text.length - 1)}</Text>,
+            sync.text ? (
+              <Text color={sync.color} dimColor={!sync.color}>
+                {sync.text}
+              </Text>
+            ) : null,
+            dirty
+              ? { text: `✎ ${changeParts.join(' · ')}`, color: AMBER }
+              : { text: '✓ working tree clean', color: GREEN },
+          )}
+        </Box>
 
-        {snap.slug
-          ? section('prs', snap.prs.length, SECTION_TITLES.prs, () =>
-              snap.prs.length > 0
-                ? snap.prs.map(prRow)
-                : [
-                    <Box key="prs-empty">
-                      <Text dimColor>{snap.prsNote || 'no open PRs'}</Text>
-                    </Box>,
-                  ],
-            )
-          : null}
+        {section('local', SECTION_TITLES.local, others.map(branchRow), 'no other branches')}
 
-        {snap.remotes.length > 0
-          ? section('remote', snap.remotes.length, SECTION_TITLES.remote, () => [
-              ...snap.remotes.slice(0, LIST_LIMIT).map(remoteRow),
-              more('remote-more', snap.remotes.length - LIST_LIMIT),
-            ])
-          : null}
+        {snap.slug ? section('prs', SECTION_TITLES.prs, snap.prs.map(prRow), snap.prsNote || 'no open PRs') : null}
 
-        {section('commits', snap.commits.length, `${SECTION_TITLES.commits} · ${snap.current}`, () => snap.commits.map(commitRow))}
+        {snap.remotes.length > 0 ? section('remote', SECTION_TITLES.remote, snap.remotes.map(remoteRow)) : null}
+
+        {section('commits', `${SECTION_TITLES.commits} · ${short(snap.current, 24)}`, snap.commits.map(commitRow), 'no commits yet')}
       </Box>
     )
   })

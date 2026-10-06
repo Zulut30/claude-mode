@@ -63,6 +63,6 @@ export type SectionId = 'local' | 'prs' | 'remote' | 'commits'
 
 declare module 'claude-code' {
   interface PluginState {
-    'git-branches': { snapshot: GitSnapshot | null; isLoading: boolean; collapsed: SectionId[] }
+    'git-branches': { snapshot: GitSnapshot | null; isLoading: boolean; expanded: SectionId[] }
   }
 }

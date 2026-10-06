@@ -1,75 +1,149 @@
 # claude-mode
 
-Mods for **Claude Code** (desktop Code tab and terminal), built on the function-hooks plugin API.
+Four mods for **Claude Code** — the desktop app's Code tab and the terminal. Each mod is its own folder: install only the ones you want.
 
 [Русская версия →](README.ru.md)
 
-| Mod | What it shows |
-| --- | --- |
-| **usage-band** | A two-line band above the prompt: context window fill, memory files loaded, and subscription limits (5-hour and weekly) with a reset countdown. |
-| **roadmap** | A **Roadmap** pane: the current task and its stages top to bottom — context → implementation → checks → tests → push → deploy — detected from what Claude actually does, plus Claude's own plan, durations and an "Earlier" history. |
-| **git-branches** | A GitLens-style **Branches** pane: current branch, ahead/behind, working-tree changes, local and remote branches, GitHub pull requests with check status, and recent commits. |
+| | Mod | What it gives you | Where it shows |
+| --- | --- | --- | --- |
+| 📊 | [**usage-band**](en/usage-band) | Context window fill, loaded memory files and subscription limits (5-hour and weekly) | A band above the prompt |
+| 🗺️ | [**roadmap**](en/roadmap) | The stages of the current task: context → implementation → checks → tests → push → deploy | A **Roadmap** pane |
+| 🌿 | [**git-branches**](en/git-branches) | Branches, sync with the remote, GitHub pull requests and commits, GitLens-style | A **Branches** pane |
+| ⚡ | [**token-speed**](en/token-speed) | The model's response speed in tokens per second | The status line under the prompt |
 
-Every mod ships in two languages: [`en/`](en) and [`ru/`](ru). Load one language per mod — both use the same plugin names.
+Every mod ships in English ([`en/`](en)) and Russian ([`ru/`](ru)). Pick one language per mod — both versions use the same plugin name.
+
+## What it looks like
+
+**usage-band** — above the prompt:
+
+```
+━━━━────── 42% context · 84k / 200k       ━━──────── 24% limit 5h · resets in 2h 15m
+memory: 2 files · ~2k tokens               ━━━━━━━━━─ 91% weekly limit · resets in 3d 4h
+```
+
+**roadmap** — the Roadmap pane:
+
+```
+TASK                                 ● Claude is working · 6m
+build the login page
+━━━━━━━━━━━━──────────  2 of 4
+
+✓ Context                                                1m
+  read 6 files · 14 actions
+● Implementation                                         4m
+  3 files: login.tsx, api.ts, styles.css
+  ✓ Lay out the form
+  ● Wire up the API
+○ Tests
+○ Push
+
+[ Details ]  [ New task ]
+▸ Earlier · 3
+```
+
+**git-branches** — the Branches pane:
+
+```
+acme/site                            [ ↻ Refresh ] [ ⇣ Fetch ]
+updated 1m ago · open on GitHub
+
+● main                                            ↑2 to push
+  ✎ 2 modified · 1 untracked
+
+BRANCHES · 3
+○ feature/login                                ↓5  #12   2d
+  b2c3d4e feat: login
+○ wip                                            local only
+PULL REQUESTS · 1
+✓ Login page                                            #12
+  feature/login · checks passed · approved
+COMMITS · main · 8
+│ a1b2c3d fix: header                                    3h
+```
+
+**token-speed** — under the prompt:
+
+```
+⚡ ≈48 tok/s                            while it answers (estimate)
+⚡ 52 tok/s · 1,240 tokens in 24 s      after it answers (exact, from the API)
+```
 
 ## Install
 
-Requires Claude Code **2.1.288** or newer. The function-hooks API is in early access and may change between releases.
+Requires **Claude Code 2.1.288** or newer. The mods use the function-hooks API, which is in early access and may change between releases.
 
-### Terminal
+**1. Clone the repository** somewhere permanent:
 
 ```bash
-claude --plugin-dir ./en/usage-band --plugin-dir ./en/roadmap --plugin-dir ./en/git-branches
+git clone https://github.com/Zulut30/claude-mode.git ~/claude-mode
 ```
 
-### Desktop app (and every session)
+**2. Turn on the mods you want.**
 
-Add the folders to `CLAUDE_CODE_PLUGIN_DIRS` in the `env` block of `~/.claude/settings.json`. Use absolute paths separated by `;` on Windows or `:` on macOS/Linux:
+*Desktop app (and every session).* Open `~/.claude/settings.json` and add `CLAUDE_CODE_PLUGIN_DIRS` to its `env` block: absolute paths to the mod folders, separated by `;` on Windows or `:` on macOS/Linux. If you already have an `env` block, add the line inside it.
 
 ```json
 {
   "env": {
-    "CLAUDE_CODE_PLUGIN_DIRS": "C:\\code\\claude-mode\\en\\usage-band;C:\\code\\claude-mode\\en\\roadmap;C:\\code\\claude-mode\\en\\git-branches"
+    "CLAUDE_CODE_PLUGIN_DIRS": "/Users/you/claude-mode/en/usage-band:/Users/you/claude-mode/en/roadmap:/Users/you/claude-mode/en/git-branches:/Users/you/claude-mode/en/token-speed"
   }
 }
 ```
 
-Restart the app or open a new session to load them.
+On Windows: `"C:\\Users\\you\\claude-mode\\en\\usage-band;C:\\Users\\you\\claude-mode\\en\\roadmap;…"`.
 
-## Usage
+*Terminal only, for one run:*
 
-| Command | Action |
+```bash
+claude --plugin-dir ~/claude-mode/en/usage-band --plugin-dir ~/claude-mode/en/roadmap --plugin-dir ~/claude-mode/en/git-branches --plugin-dir ~/claude-mode/en/token-speed
+```
+
+**3. Restart the app** or open a new session.
+
+**Update:** `git pull` in the repository folder, then start a new session. **Remove:** take the paths out of `CLAUDE_CODE_PLUGIN_DIRS`.
+
+## Commands
+
+| Command | What it does |
 | --- | --- |
 | `/roadmap` | Open the Roadmap pane |
-| `/roadmap reset` | Start a new task (the current one moves to "Earlier") |
+| `/roadmap reset` | Start a new task; the current one moves to "Earlier" |
 | `/branches` | Open the Branches pane |
 | `/branches fetch` | Run `git fetch --all --prune`, then refresh |
 
-The band needs no command — it appears above the prompt by itself.
+The usage band and token speed need no command. The Roadmap pane opens by itself when a session starts, the Branches pane opens by itself in a git project.
 
-### How the roadmap works
+## What the mods read and run
 
-- Every new prompt starts a new task. Short confirmations (`yes`, `ok`, `go ahead`, `continue`…) continue the current one.
-- Stages are detected from tool calls: reads and searches → **Context**; edits and other shell commands → **Implementation**; `tsc`, linters, `validate`, `build` → **Checks**; `npm test`, `pytest`, `jest`… → **Tests**; `git commit` / `git push` → **Push**; `vercel`, `netlify`, `wrangler`, `docker push`… → **Deploy**.
-- Stages adapt to the project: **Push** only shows in a git repository, **Deploy** only when deploy config exists (`vercel.json`, `Dockerfile`, `.github/workflows`, …), **Checks** and **Tests** only when the project has them — unless they actually happened.
-- When Claude keeps a todo list, it appears under **Implementation** with its own progress.
+The mods run inside Claude Code and send nothing to third parties.
 
-### Branches pane requirements
+| Mod | Reads | Runs | Network |
+| --- | --- | --- | --- |
+| usage-band | Session figures from Claude Code: context, memory, limits | — | none |
+| roadmap | Your prompts (for the task title) and Claude's tool calls in the session; whether files like `package.json` or `vercel.json` exist in the project | `git rev-parse` | none |
+| git-branches | The state of the repository in the session folder | `git for-each-ref`, `git status`, `git log`, `git remote`; `gh pr list`; `git fetch` only when you press **Fetch** | `gh` calls GitHub as your account; `fetch` talks to your remote |
+| token-speed | The model's response stream (counts characters and tokens) | — | none |
 
-- `git` on `PATH`.
-- For pull requests: the [GitHub CLI](https://cli.github.com/) signed in (`gh auth login`). Without it the pane still shows branches and commits.
-- The pane is read-only apart from **Fetch**.
+Mod state lives in the Claude Code session; nothing is written to disk.
 
-## Notes
+## Troubleshooting
 
-- The app decides where a pane is placed; a mod cannot dock it to a particular side or add items to the app's own menus.
-- Each mod has tests: `claude plugin test en/roadmap`.
+- **No band or speed line.** The speed appears during or after the model's first answer. Check that the paths in `CLAUDE_CODE_PLUGIN_DIRS` are absolute and point at the mod folder (the one containing `.claude-plugin`).
+- **"No git repository here" in the Branches pane.** The session is not open in a project folder that uses git.
+- **No pull requests.** Install the [GitHub CLI](https://cli.github.com/) and run `gh auth login`.
+- **The pane opens in the wrong place.** The app decides where panes go; a mod cannot dock a pane to a side or add items to the app's menus.
 
-## Layout
+## For developers
 
 ```
-en/  usage-band  roadmap  git-branches   English
-ru/  usage-band  roadmap  git-branches   Russian
+en/  ru/                     two language versions of every mod
+  <mod>/
+    .claude-plugin/plugin.json   manifest
+    hooks/hooks.json             which module to load
+    hooks/register.ts(x)         the mod's code
+    hooks/register.test.ts(x)    tests
+    types/index.d.ts             state types (when the mod keeps state)
 ```
 
-Each mod: `.claude-plugin/plugin.json`, `hooks/hooks.json`, `hooks/register.tsx`, `hooks/register.test.tsx`, and `types/index.d.ts` when it keeps state.
+Tests and manifest checks: `claude plugin test en/roadmap`, `claude plugin validate en/roadmap`.

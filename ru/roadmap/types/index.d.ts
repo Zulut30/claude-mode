@@ -54,6 +54,8 @@ declare module 'claude-code' {
       isDetailed: boolean
       history: PastTask[]
       isHistoryOpen: boolean
+      /** Идёт ли сейчас ход Claude. */
+      isWorking: boolean
     }
   }
 }

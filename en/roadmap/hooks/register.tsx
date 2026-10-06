@@ -27,6 +27,9 @@ const TRACK = '#8b949e55'
 
 const HISTORY_LIMIT = 8
 
+/** Height of a text line on desktop, in pixels: icons line up with the text by it. */
+const LINE_PX = 20
+
 const emptyStage = (): Stage => ({ status: 'pending', count: 0, last: '', files: [] })
 
 export const emptyMap = (): Roadmap => ({
@@ -49,12 +52,36 @@ const project = atom({ plugin: 'roadmap', key: 'project' } as const, NO_PROJECT)
 const isDetailed = atom({ plugin: 'roadmap', key: 'isDetailed' } as const, false)
 const history = atom({ plugin: 'roadmap', key: 'history' } as const, [] as PastTask[])
 const isHistoryOpen = atom({ plugin: 'roadmap', key: 'isHistoryOpen' } as const, false)
+const isWorking = atom({ plugin: 'roadmap', key: 'isWorking' } as const, false)
+
+/** Task status for the header: working, done, or something failed. */
+export const taskStatus = (current: Roadmap, found: Project, working: boolean) => {
+  const stages = visibleStages(current, found)
+  if (!current.task && !hasActivity(current)) {
+    return null
+  }
+  if (working) {
+    return { mark: 'active' as const, text: 'Claude is working', color: BLUE }
+  }
+  if (stages.some(({ id }) => current.stages[id].status === 'failed')) {
+    return { mark: 'failed' as const, text: 'Something failed', color: RED }
+  }
+
+  return { mark: 'done' as const, text: 'Done · waiting for you', color: GREEN }
+}
 
 /** A value saved by an older version of the mod may lack newer fields. */
 export const normalize = (value: Partial<Roadmap> | null | undefined): Roadmap => {
   const base = emptyMap()
 
-  return { ...base, ...value, stages: { ...base.stages, ...value?.stages }, plan: value?.plan ?? [] }
+  const task = value?.task && !isServiceText(value.task) ? value.task : ''
+
+  return { ...base, ...value, task, stages: { ...base.stages, ...value?.stages }, plan: value?.plan ?? [] }
+}
+
+/** Service inserts (`<agent-message …>`, `<task-notification>`) are not a person's requests. */
+export function isServiceText(text: string) {
+  return /^\s*<[a-z][\w-]*[\s>]/i.test(text)
 }
 
 const edit = ($: EngineInterface, fn: (current: Roadmap) => Roadmap) => update($, map, current => fn(normalize(current)))
@@ -66,14 +93,32 @@ const WORK_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 const SHELL_TOOLS = new Set(['Bash', 'PowerShell'])
 const CHECK_SKILLS = new Set(['verification-before-completion', 'code-review', 'requesting-code-review', 'security-review'])
 
+// Deploy means real deploy commands only, not the word "deploy" somewhere in the text.
 const DEPLOY_RE =
-  /\b(deploy|vercel|netlify|wrangler|railway\s+up|kubectl\s+apply|helm\s+(upgrade|install)|docker\s+push|gh\s+workflow\s+run)\b/i
+  /\b(vercel|netlify|wrangler|flyctl|railway|serverless|heroku|kamal|dokku|surge)\b(?![.\w-])|\b(firebase|fly|cdk|sam|amplify|eb)\s+deploy\b|\bgcloud\s+(app|run|functions)\s+deploy\b|\b(npm|pnpm|yarn|bun)\s+(run\s+)?deploy\b|\bdocker\s+push\b|\bkubectl\s+apply\b|\bhelm\s+(upgrade|install)\b|\bgh\s+workflow\s+run\b|\bdeploy\.(sh|ps1)\b/i
 const PUSH_RE = /\bgit\s+(push|commit)\b|\bgh\s+pr\s+create\b/i
 const TEST_RE =
   /\b(npm|pnpm|yarn|bun)\s+(run\s+)?test\b|\b(go|cargo|dotnet|deno|bun|make)\s+test\b|\bplugin\s+test\b|\b(pytest|jest|vitest|mocha|phpunit|playwright|cypress)\b/i
 const CHECK_RE =
   /\b(tsc|eslint|biome|ruff|mypy|flake8|pylint|clippy|phpcs|stylelint|typecheck|type-check|lint|validate)\b|\bprettier\s+--check\b|\bcargo\s+check\b|\bgo\s+vet\b|\bphp\s+-l\b|\b(npm|pnpm|yarn|bun)\s+(run\s+)?build\b|\bgit\s+diff\b/i
-const READ_RE = /^\s*(ls|dir|cat|head|tail|less|find|grep|rg|pwd|wc|tree|Get-ChildItem|Get-Content|git\s+(status|log|show|branch|remote))\b/i
+// Commands that only read: if the whole script is made of them, it is context gathering.
+const READ_RE =
+  /^(ls|dir|cat|head|tail|less|more|find|grep|rg|pwd|wc|tree|stat|file|which|where|type|echo|printf|sort|uniq|cut|jq|sleep|true|Get-ChildItem|Get-Content|Get-Item|Select-String|Test-Path|Resolve-Path|sed\s+-n|git\s+(status|log|show|diff|branch|remote|ls-files|rev-parse|blame|config\s+--get)|gh\s+(repo\s+view|pr\s+(list|view|status|checks|diff)|issue\s+(list|view)|run\s+(list|view)|api|auth\s+status|search))\b/i
+const SKIP_SEGMENT_RE = /^(cd|export|set|do|done|then|fi|for|if|else|while)\b/
+
+/** Quoted strings become empty: "deploy" in a commit message is not a deploy. */
+export const unquoted = (command: string) => command.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, '""')
+
+/** The script without heredoc bodies (`<<EOF … EOF`): commit and file text is not commands. */
+export const withoutHeredocs = (command: string) =>
+  command.replace(/<<-?\s*['"]?(\w+)['"]?([^\n]*)\n[\s\S]*?\n\s*\1\s*(?=\n|$)/g, '$2')
+
+/** The script's commands one by one, without variable assignments and `cd`. */
+const commandSegments = (command: string) =>
+  command
+    .split(/\r?\n|&&|\|\||;|\|/)
+    .map(segment => segment.trim().replace(/^(\w+=("[^"]*"|'[^']*'|\S*)\s*)+/, '').trim())
+    .filter(segment => segment && !SKIP_SEGMENT_RE.test(segment))
 
 const field = (e: object, name: string) => {
   const value = (e as Record<string, unknown>)[name]
@@ -95,13 +140,11 @@ const short = (text: string, max: number) => {
  * `S="C:/…"; claude plugin test "$M"` → `claude plugin test`.
  */
 export const describeCommand = (command: string, pattern?: RegExp) => {
-  const segments = command
-    .split(/\r?\n|&&|\|\||;|\|/)
-    .map(segment => segment.trim())
-    .filter(segment => segment && !/^(cd|export|set|echo|do|done|then|fi|for|if)\b/.test(segment))
-    .map(segment => segment.replace(/^(\w+=("[^"]*"|'[^']*'|\S*)\s*)+/, '').trim())
-    .filter(Boolean)
-  const segment = (pattern && segments.find(one => pattern.test(one))) ?? segments[0] ?? ''
+  const segments = commandSegments(withoutHeredocs(command)).filter(segment => !/^echo\b/.test(segment))
+  const segment =
+    (pattern && (segments.find(one => pattern.test(unquoted(one))) ?? segments.find(one => pattern.test(one)))) ??
+    segments[0] ??
+    ''
 
   const words: string[] = []
   for (const token of segment.split(/\s+/)) {
@@ -133,15 +176,24 @@ export const classify = (e: { tool: string; [key: string]: unknown }): Step | nu
 
   if (SHELL_TOOLS.has(tool)) {
     const command = field(e, 'command')
-    const rules: [StageId, RegExp | undefined][] = [
+    const script = withoutHeredocs(command)
+    const bare = unquoted(script)
+    const rules: [StageId, RegExp][] = [
       ['deploy', DEPLOY_RE],
       ['push', PUSH_RE],
       ['test', TEST_RE],
       ['check', CHECK_RE],
     ]
-    const [stage, pattern] = rules.find(([, re]) => re?.test(command)) ?? [READ_RE.test(command) ? 'context' : 'work', undefined]
+    // Deploy and push only by the commands themselves; tests and checks can also be told by a quoted file.
+    const found = rules.find(([, re]) => re.test(bare)) ?? rules.slice(2).find(([, re]) => re.test(script))
+    if (found) {
+      return { stage: found[0], last: describeCommand(command, found[1]) }
+    }
 
-    return { stage, last: describeCommand(command, pattern) }
+    const segments = commandSegments(bare)
+    const isReadOnly = segments.length > 0 && segments.every(segment => READ_RE.test(segment))
+
+    return { stage: isReadOnly ? 'context' : 'work', last: describeCommand(command) }
   }
 
   if (WORK_TOOLS.has(tool)) {
@@ -236,6 +288,25 @@ export const closeTurn = (current: Roadmap, now: number): Roadmap => {
 
 const CONTINUE_RE =
   /^(go ahead|do it|sounds good|yes|yep|yeah|ok|okay|sure|go|continue|proceed|next|lgtm|right|agreed)([\s,.!]|$)/i
+
+// A person's requests: from the input box, the phone, the desktop app. Agent messages (`peer`) and notifications are not.
+const PERSON_ORIGINS = new Set(['composer', 'bridge', 'sdk'])
+
+export const isPersonPrompt = (origin: string, text: string) =>
+  PERSON_ORIGINS.has(origin) && text.trim() !== '' && !text.trim().startsWith('/') && !isServiceText(text)
+
+/** Task title: the first meaningful line of the request, up to ~90 characters at a word boundary. */
+export const taskTitle = (text: string) => {
+  const line = text.split(/\r?\n/).map(one => one.trim()).find(Boolean) ?? ''
+  if (line.length <= 90) {
+    return line
+  }
+
+  const cut = line.slice(0, 90)
+  const space = cut.lastIndexOf(' ')
+
+  return `${(space > 50 ? cut.slice(0, space) : cut).replace(/[\s,.;:—-]+$/, '')}…`
+}
 
 /** A short "yes / go ahead / continue" continues the current task; anything else starts a new one. */
 export const isContinuation = (text: string) => {
@@ -391,7 +462,13 @@ const iconSvg = (mark: Mark, size: number) => {
       `<path d="M5.5 8h5" stroke="${GRAY}" stroke-opacity=".7" stroke-width="1.6" stroke-linecap="round"/>`,
   }
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 16 16">${body[mark]}</svg>`
+  // A `size`-pixel circle in a frame one text line high, so it sits exactly at the line's center.
+  const unitsHigh = (LINE_PX * 16) / size
+
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${LINE_PX}" ` +
+    `viewBox="0 ${(16 - unitsHigh) / 2} 16 ${unitsHigh}">${body[mark]}</svg>`
+  )
 }
 
 const progressSvg = (part: number, width: number) => {
@@ -499,14 +576,17 @@ export const register: Register = on => {
   // Every new prompt is a new task; "yes", "go ahead", "continue" continue the current one.
   on('prompt.submit', async ($, e, next) => {
     const text = e.text.trim()
-    const isPerson = e.origin.kind !== 'task-notification' && e.origin.kind !== 'scheduled-trigger'
-    if (isPerson && text && !text.startsWith('/')) {
+    if (isPersonPrompt(e.origin.kind, text)) {
       const current = normalize(await read($, map))
       if (!current.task && !hasActivity(current)) {
-        await update($, map, () => ({ ...current, task: short(text, 140) }))
+        await update($, map, () => ({ ...current, task: taskTitle(text) }))
       } else if (!isContinuation(text)) {
-        await startNewTask($, short(text, 140))
+        await startNewTask($, taskTitle(text))
       }
+    }
+    // Any request other than a slash command starts Claude's turn.
+    if (text && !text.startsWith('/')) {
+      await update($, isWorking, () => true)
     }
 
     return next(e)
@@ -560,6 +640,7 @@ export const register: Register = on => {
   })
 
   on('turn.complete', async ($, e, next) => {
+    await update($, isWorking, () => false)
     const now = await $.clock.now()
     await edit($, current => closeTurn(current, now))
     await refreshProject($).catch(() => undefined)
@@ -575,33 +656,31 @@ export const register: Register = on => {
     const current = normalize(await read($, map))
     const found = await read($, project)
     const detailed = await read($, isDetailed)
-    const past = await read($, history)
+    const past = (await read($, history)).filter(item => !isServiceText(item.task))
     const showPast = await read($, isHistoryOpen)
+    const status = taskStatus(current, found, await read($, isWorking))
     const now = await $.clock.now()
 
     const columns = e.props.bodyColumns
     const narrow = columns < 36
+    // Text width next to an icon. Texts are cut in advance: a long truncated line
+    // on desktop still takes up height as if it wrapped.
+    const room = Math.max(16, columns - 4)
     const stages = visibleStages(current, found)
     const lastStarted = stages.reduce((at, { id }, index) => (current.stages[id].status === 'pending' ? at : index), -1)
     const doneCount = stages.filter(({ id }) => current.stages[id].status === 'done').length
     const total = current.startedAt === undefined ? '' : formatDuration(now - current.startedAt)
-    const barCells = Math.max(8, Math.min(24, columns - 16))
+    const barCells = Math.max(8, Math.min(24, columns - 12))
     const filledCells = Math.round((barCells * doneCount) / Math.max(1, stages.length))
 
-    // Icon: an SVG circle on desktop, a colored glyph in the terminal. Same width for every line.
-    const icon = (mark: Mark, size = 16) =>
+    // Icon: on desktop an SVG one text line high, in the terminal a colored glyph.
+    const icon = (mark: Mark, isSmall = false) =>
       Svg ? (
-        <Svg source={iconSvg(mark, size)} alt={MARKS[mark].alt} width={size} height={size} />
+        <Svg source={iconSvg(mark, isSmall ? 12 : 16)} alt={MARKS[mark].alt} width={isSmall ? 12 : 16} height={LINE_PX} />
       ) : (
         <Text color={MARKS[mark].color} dimColor={!MARKS[mark].color} bold>
           {MARKS[mark].glyph}
         </Text>
-      )
-    const indent = (size = 16) =>
-      Svg ? (
-        <Svg source={`<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="1"></svg>`} alt="" width={size} height={1} />
-      ) : (
-        <Text> </Text>
       )
 
     return (
@@ -611,14 +690,25 @@ export const register: Register = on => {
             <Text dimColor bold>
               TASK
             </Text>
-            {total ? <Text dimColor>{total}</Text> : null}
+            {status ? (
+              <Box key="status" flexDirection="row" alignItems="center" columnGap={1}>
+                {icon(status.mark, true)}
+                <Text color={status.color}>{status.text}</Text>
+                {total ? <Text dimColor>· {total}</Text> : null}
+              </Box>
+            ) : null}
           </Box>
           <Text bold={Boolean(current.task)} dimColor={!current.task} wrap="wrap">
             {current.task || 'Appears with your next request'}
           </Text>
           <Box key="progress" flexDirection="row" alignItems="center" columnGap={1}>
             {Svg ? (
-              <Svg source={progressSvg(doneCount / Math.max(1, stages.length), 120)} alt={`${doneCount} of ${stages.length}`} width={120} height={6} />
+              <Svg
+                source={progressSvg(doneCount / Math.max(1, stages.length), 120)}
+                alt={`${doneCount} of ${stages.length}`}
+                width={120}
+                height={6}
+              />
             ) : (
               <Box key="bar" flexDirection="row">
                 <Text color={GREEN}>{'━'.repeat(filledCells)}</Text>
@@ -638,32 +728,38 @@ export const register: Register = on => {
             const mark: Mark = isSkipped ? 'skipped' : stage.status
             const lines = stageLines(id, stage, current.plan, isSkipped, detailed, narrow)
             const time = narrow ? '' : timeLabel(stage, now)
+            const heading = `${title}${isSkipped ? ' · skipped' : ''}`
 
             return (
-              <Box key={id} flexDirection="column">
-                <Box key={`${id}-title`} flexDirection="row" alignItems="center" columnGap={1}>
-                  {icon(mark)}
-                  <Box key={`${id}-name`} flexGrow={1} flexShrink={1}>
-                    <Text bold={stage.status === 'active'} dimColor={stage.status === 'pending'} wrap="truncate-end">
-                      {title}
-                      {isSkipped ? ' · skipped' : ''}
+              <Box key={id} flexDirection="row" columnGap={1}>
+                {icon(mark)}
+                <Box key={`${id}-body`} flexDirection="column" flexGrow={1} flexShrink={1}>
+                  <Box key={`${id}-head`} flexDirection="row" justifyContent="space-between" columnGap={1}>
+                    <Text bold={stage.status === 'active'} dimColor={stage.status === 'pending'}>
+                      {short(heading, room - time.length - 1)}
                     </Text>
+                    {time ? (
+                      <Text color={stage.status === 'active' ? BLUE : undefined} dimColor={stage.status !== 'active'}>
+                        {time}
+                      </Text>
+                    ) : null}
                   </Box>
-                  {time ? (
-                    <Text color={stage.status === 'active' ? BLUE : undefined} dimColor={stage.status !== 'active'}>
-                      {time}
-                    </Text>
-                  ) : null}
+                  {lines.map(line =>
+                    line.mark ? (
+                      <Box flexDirection="row" columnGap={1}>
+                        {icon(line.mark, true)}
+                        <Text dimColor={line.isDim}>{short(line.text, room - 3)}</Text>
+                      </Box>
+                    ) : (
+                      <Text
+                        color={line.color ?? (stage.status === 'active' ? BLUE : undefined)}
+                        dimColor={line.isDim && stage.status !== 'active'}
+                      >
+                        {short(line.text, room)}
+                      </Text>
+                    ),
+                  )}
                 </Box>
-                {lines.map(line => (
-                  <Box flexDirection="row" alignItems="center" columnGap={1}>
-                    {indent()}
-                    {line.mark ? icon(line.mark, 12) : null}
-                    <Text color={line.color} dimColor={line.isDim} wrap="truncate-end">
-                      {line.text}
-                    </Text>
-                  </Box>
-                ))}
               </Box>
             )
           })}
@@ -685,18 +781,12 @@ export const register: Register = on => {
             />
             {showPast
               ? past.map((item, index) => (
-                  <Box key={`past-${index}`} flexDirection="row" alignItems="center" columnGap={1}>
-                    {icon(item.isFailed ? 'failed' : item.done === item.total ? 'done' : 'skipped', 12)}
-                    <Box key={`past-${index}-name`} flexGrow={1} flexShrink={1}>
-                      <Text dimColor wrap="truncate-end">
-                        {item.task}
-                      </Text>
+                  <Box key={`past-${index}`} flexDirection="row" justifyContent="space-between" columnGap={1}>
+                    <Box key={`past-${index}-name`} flexDirection="row" columnGap={1}>
+                      {icon(item.isFailed ? 'failed' : item.done === item.total ? 'done' : 'skipped', true)}
+                      <Text dimColor>{short(item.task, room - (narrow ? 3 : 10))}</Text>
                     </Box>
-                    {narrow ? null : (
-                      <Text dimColor>
-                        {item.done}/{item.total} · {formatDuration(item.durationMs)}
-                      </Text>
-                    )}
+                    {narrow ? null : <Text dimColor>{formatDuration(item.durationMs)}</Text>}
                   </Box>
                 ))
               : null}

@@ -27,6 +27,9 @@ const TRACK = '#8b949e55'
 
 const HISTORY_LIMIT = 8
 
+/** Высота строки текста на десктопе, в пикселях: по ней значки встают вровень с текстом. */
+const LINE_PX = 20
+
 const emptyStage = (): Stage => ({ status: 'pending', count: 0, last: '', files: [] })
 
 export const emptyMap = (): Roadmap => ({
@@ -49,12 +52,36 @@ const project = atom({ plugin: 'roadmap', key: 'project' } as const, NO_PROJECT)
 const isDetailed = atom({ plugin: 'roadmap', key: 'isDetailed' } as const, false)
 const history = atom({ plugin: 'roadmap', key: 'history' } as const, [] as PastTask[])
 const isHistoryOpen = atom({ plugin: 'roadmap', key: 'isHistoryOpen' } as const, false)
+const isWorking = atom({ plugin: 'roadmap', key: 'isWorking' } as const, false)
+
+/** Статус задачи для шапки: работает, готово или есть ошибка. */
+export const taskStatus = (current: Roadmap, found: Project, working: boolean) => {
+  const stages = visibleStages(current, found)
+  if (!current.task && !hasActivity(current)) {
+    return null
+  }
+  if (working) {
+    return { mark: 'active' as const, text: 'Claude работает', color: BLUE }
+  }
+  if (stages.some(({ id }) => current.stages[id].status === 'failed')) {
+    return { mark: 'failed' as const, text: 'Есть ошибка', color: RED }
+  }
+
+  return { mark: 'done' as const, text: 'Готово · ждёт вас', color: GREEN }
+}
 
 /** Значение из прошлой версии мода могло не иметь новых полей. */
 export const normalize = (value: Partial<Roadmap> | null | undefined): Roadmap => {
   const base = emptyMap()
 
-  return { ...base, ...value, stages: { ...base.stages, ...value?.stages }, plan: value?.plan ?? [] }
+  const task = value?.task && !isServiceText(value.task) ? value.task : ''
+
+  return { ...base, ...value, task, stages: { ...base.stages, ...value?.stages }, plan: value?.plan ?? [] }
+}
+
+/** Служебные вставки (`<agent-message …>`, `<task-notification>`) — не запросы человека. */
+export function isServiceText(text: string) {
+  return /^\s*<[a-z][\w-]*[\s>]/i.test(text)
 }
 
 const edit = ($: EngineInterface, fn: (current: Roadmap) => Roadmap) => update($, map, current => fn(normalize(current)))
@@ -66,14 +93,32 @@ const WORK_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 const SHELL_TOOLS = new Set(['Bash', 'PowerShell'])
 const CHECK_SKILLS = new Set(['verification-before-completion', 'code-review', 'requesting-code-review', 'security-review'])
 
+// Деплой — только настоящие команды деплоя, а не слово «deploy» где-то в тексте.
 const DEPLOY_RE =
-  /\b(deploy|vercel|netlify|wrangler|railway\s+up|kubectl\s+apply|helm\s+(upgrade|install)|docker\s+push|gh\s+workflow\s+run)\b/i
+  /\b(vercel|netlify|wrangler|flyctl|railway|serverless|heroku|kamal|dokku|surge)\b(?![.\w-])|\b(firebase|fly|cdk|sam|amplify|eb)\s+deploy\b|\bgcloud\s+(app|run|functions)\s+deploy\b|\b(npm|pnpm|yarn|bun)\s+(run\s+)?deploy\b|\bdocker\s+push\b|\bkubectl\s+apply\b|\bhelm\s+(upgrade|install)\b|\bgh\s+workflow\s+run\b|\bdeploy\.(sh|ps1)\b/i
 const PUSH_RE = /\bgit\s+(push|commit)\b|\bgh\s+pr\s+create\b/i
 const TEST_RE =
   /\b(npm|pnpm|yarn|bun)\s+(run\s+)?test\b|\b(go|cargo|dotnet|deno|bun|make)\s+test\b|\bplugin\s+test\b|\b(pytest|jest|vitest|mocha|phpunit|playwright|cypress)\b/i
 const CHECK_RE =
   /\b(tsc|eslint|biome|ruff|mypy|flake8|pylint|clippy|phpcs|stylelint|typecheck|type-check|lint|validate)\b|\bprettier\s+--check\b|\bcargo\s+check\b|\bgo\s+vet\b|\bphp\s+-l\b|\b(npm|pnpm|yarn|bun)\s+(run\s+)?build\b|\bgit\s+diff\b/i
-const READ_RE = /^\s*(ls|dir|cat|head|tail|less|find|grep|rg|pwd|wc|tree|Get-ChildItem|Get-Content|git\s+(status|log|show|branch|remote))\b/i
+// Команды, которые только читают: если весь скрипт из них, это подготовка контекста.
+const READ_RE =
+  /^(ls|dir|cat|head|tail|less|more|find|grep|rg|pwd|wc|tree|stat|file|which|where|type|echo|printf|sort|uniq|cut|jq|sleep|true|Get-ChildItem|Get-Content|Get-Item|Select-String|Test-Path|Resolve-Path|sed\s+-n|git\s+(status|log|show|diff|branch|remote|ls-files|rev-parse|blame|config\s+--get)|gh\s+(repo\s+view|pr\s+(list|view|status|checks|diff)|issue\s+(list|view)|run\s+(list|view)|api|auth\s+status|search))\b/i
+const SKIP_SEGMENT_RE = /^(cd|export|set|do|done|then|fi|for|if|else|while)\b/
+
+/** Строки в кавычках пустеют: «deploy» в сообщении коммита — не деплой. */
+export const unquoted = (command: string) => command.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, '""')
+
+/** Скрипт без тел heredoc (`<<EOF … EOF`): текст коммита и файлов — не команды. */
+export const withoutHeredocs = (command: string) =>
+  command.replace(/<<-?\s*['"]?(\w+)['"]?([^\n]*)\n[\s\S]*?\n\s*\1\s*(?=\n|$)/g, '$2')
+
+/** Команды скрипта по отдельности, без присваиваний переменных и `cd`. */
+const commandSegments = (command: string) =>
+  command
+    .split(/\r?\n|&&|\|\||;|\|/)
+    .map(segment => segment.trim().replace(/^(\w+=("[^"]*"|'[^']*'|\S*)\s*)+/, '').trim())
+    .filter(segment => segment && !SKIP_SEGMENT_RE.test(segment))
 
 const field = (e: object, name: string) => {
   const value = (e as Record<string, unknown>)[name]
@@ -95,13 +140,11 @@ const short = (text: string, max: number) => {
  * `S="C:/…"; claude plugin test "$M"` → `claude plugin test`.
  */
 export const describeCommand = (command: string, pattern?: RegExp) => {
-  const segments = command
-    .split(/\r?\n|&&|\|\||;|\|/)
-    .map(segment => segment.trim())
-    .filter(segment => segment && !/^(cd|export|set|echo|do|done|then|fi|for|if)\b/.test(segment))
-    .map(segment => segment.replace(/^(\w+=("[^"]*"|'[^']*'|\S*)\s*)+/, '').trim())
-    .filter(Boolean)
-  const segment = (pattern && segments.find(one => pattern.test(one))) ?? segments[0] ?? ''
+  const segments = commandSegments(withoutHeredocs(command)).filter(segment => !/^echo\b/.test(segment))
+  const segment =
+    (pattern && (segments.find(one => pattern.test(unquoted(one))) ?? segments.find(one => pattern.test(one)))) ??
+    segments[0] ??
+    ''
 
   const words: string[] = []
   for (const token of segment.split(/\s+/)) {
@@ -133,15 +176,24 @@ export const classify = (e: { tool: string; [key: string]: unknown }): Step | nu
 
   if (SHELL_TOOLS.has(tool)) {
     const command = field(e, 'command')
-    const rules: [StageId, RegExp | undefined][] = [
+    const script = withoutHeredocs(command)
+    const bare = unquoted(script)
+    const rules: [StageId, RegExp][] = [
       ['deploy', DEPLOY_RE],
       ['push', PUSH_RE],
       ['test', TEST_RE],
       ['check', CHECK_RE],
     ]
-    const [stage, pattern] = rules.find(([, re]) => re?.test(command)) ?? [READ_RE.test(command) ? 'context' : 'work', undefined]
+    // Деплой и пуш — только по самим командам; тест и проверку можно узнать и по файлу в кавычках.
+    const found = rules.find(([, re]) => re.test(bare)) ?? rules.slice(2).find(([, re]) => re.test(script))
+    if (found) {
+      return { stage: found[0], last: describeCommand(command, found[1]) }
+    }
 
-    return { stage, last: describeCommand(command, pattern) }
+    const segments = commandSegments(bare)
+    const isReadOnly = segments.length > 0 && segments.every(segment => READ_RE.test(segment))
+
+    return { stage: isReadOnly ? 'context' : 'work', last: describeCommand(command) }
   }
 
   if (WORK_TOOLS.has(tool)) {
@@ -236,6 +288,25 @@ export const closeTurn = (current: Roadmap, now: number): Roadmap => {
 
 const CONTINUE_RE =
   /^(да|ага|угу|ок|окей|ok|okay|yes|yep|давай|продолжай|продолжи|дальше|го|go|верно|согласен|подтверждаю|поехали|запускай|можно)([\s,.!]|$)/i
+
+// Запросы человека: из поля ввода, с телефона, из десктопа. Сообщения агентов (`peer`) и уведомления — нет.
+const PERSON_ORIGINS = new Set(['composer', 'bridge', 'sdk'])
+
+export const isPersonPrompt = (origin: string, text: string) =>
+  PERSON_ORIGINS.has(origin) && text.trim() !== '' && !text.trim().startsWith('/') && !isServiceText(text)
+
+/** Название задачи: первая содержательная строка запроса, до ~90 символов по границе слова. */
+export const taskTitle = (text: string) => {
+  const line = text.split(/\r?\n/).map(one => one.trim()).find(Boolean) ?? ''
+  if (line.length <= 90) {
+    return line
+  }
+
+  const cut = line.slice(0, 90)
+  const space = cut.lastIndexOf(' ')
+
+  return `${(space > 50 ? cut.slice(0, space) : cut).replace(/[\s,.;:—-]+$/, '')}…`
+}
 
 /** Короткое «да / давай / продолжай» продолжает текущую задачу, всё остальное — новая. */
 export const isContinuation = (text: string) => {
@@ -399,7 +470,13 @@ const iconSvg = (mark: Mark, size: number) => {
       `<path d="M5.5 8h5" stroke="${GRAY}" stroke-opacity=".7" stroke-width="1.6" stroke-linecap="round"/>`,
   }
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 16 16">${body[mark]}</svg>`
+  // Кружок `size` пикселей в рамке высотой в строку текста — стоит ровно по центру строки.
+  const unitsHigh = (LINE_PX * 16) / size
+
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${LINE_PX}" ` +
+    `viewBox="0 ${(16 - unitsHigh) / 2} 16 ${unitsHigh}">${body[mark]}</svg>`
+  )
 }
 
 const progressSvg = (part: number, width: number) => {
@@ -507,14 +584,17 @@ export const register: Register = on => {
   // Каждый новый запрос — новая задача; «да», «давай», «продолжай» — продолжение текущей.
   on('prompt.submit', async ($, e, next) => {
     const text = e.text.trim()
-    const isPerson = e.origin.kind !== 'task-notification' && e.origin.kind !== 'scheduled-trigger'
-    if (isPerson && text && !text.startsWith('/')) {
+    if (isPersonPrompt(e.origin.kind, text)) {
       const current = normalize(await read($, map))
       if (!current.task && !hasActivity(current)) {
-        await update($, map, () => ({ ...current, task: short(text, 140) }))
+        await update($, map, () => ({ ...current, task: taskTitle(text) }))
       } else if (!isContinuation(text)) {
-        await startNewTask($, short(text, 140))
+        await startNewTask($, taskTitle(text))
       }
+    }
+    // Любой запрос, кроме слэш-команды, запускает ход Claude.
+    if (text && !text.startsWith('/')) {
+      await update($, isWorking, () => true)
     }
 
     return next(e)
@@ -568,6 +648,7 @@ export const register: Register = on => {
   })
 
   on('turn.complete', async ($, e, next) => {
+    await update($, isWorking, () => false)
     const now = await $.clock.now()
     await edit($, current => closeTurn(current, now))
     await refreshProject($).catch(() => undefined)
@@ -583,33 +664,31 @@ export const register: Register = on => {
     const current = normalize(await read($, map))
     const found = await read($, project)
     const detailed = await read($, isDetailed)
-    const past = await read($, history)
+    const past = (await read($, history)).filter(item => !isServiceText(item.task))
     const showPast = await read($, isHistoryOpen)
+    const status = taskStatus(current, found, await read($, isWorking))
     const now = await $.clock.now()
 
     const columns = e.props.bodyColumns
     const narrow = columns < 36
+    // Ширина текста рядом со значком. Тексты режем заранее: длинная строка с обрезкой
+    // на десктопе всё равно занимает высоту, как если бы переносилась.
+    const room = Math.max(16, columns - 4)
     const stages = visibleStages(current, found)
     const lastStarted = stages.reduce((at, { id }, index) => (current.stages[id].status === 'pending' ? at : index), -1)
     const doneCount = stages.filter(({ id }) => current.stages[id].status === 'done').length
     const total = current.startedAt === undefined ? '' : formatDuration(now - current.startedAt)
-    const barCells = Math.max(8, Math.min(24, columns - 16))
+    const barCells = Math.max(8, Math.min(24, columns - 12))
     const filledCells = Math.round((barCells * doneCount) / Math.max(1, stages.length))
 
-    // Значок: на десктопе SVG-кружок, в терминале — цветной символ. Ширина одна для всех строк.
-    const icon = (mark: Mark, size = 16) =>
+    // Значок: на десктопе SVG высотой в строку текста, в терминале — цветной символ.
+    const icon = (mark: Mark, isSmall = false) =>
       Svg ? (
-        <Svg source={iconSvg(mark, size)} alt={MARKS[mark].alt} width={size} height={size} />
+        <Svg source={iconSvg(mark, isSmall ? 12 : 16)} alt={MARKS[mark].alt} width={isSmall ? 12 : 16} height={LINE_PX} />
       ) : (
         <Text color={MARKS[mark].color} dimColor={!MARKS[mark].color} bold>
           {MARKS[mark].glyph}
         </Text>
-      )
-    const indent = (size = 16) =>
-      Svg ? (
-        <Svg source={`<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="1"></svg>`} alt="" width={size} height={1} />
-      ) : (
-        <Text> </Text>
       )
 
     return (
@@ -619,14 +698,25 @@ export const register: Register = on => {
             <Text dimColor bold>
               ЗАДАЧА
             </Text>
-            {total ? <Text dimColor>{total}</Text> : null}
+            {status ? (
+              <Box key="status" flexDirection="row" alignItems="center" columnGap={1}>
+                {icon(status.mark, true)}
+                <Text color={status.color}>{status.text}</Text>
+                {total ? <Text dimColor>· {total}</Text> : null}
+              </Box>
+            ) : null}
           </Box>
           <Text bold={Boolean(current.task)} dimColor={!current.task} wrap="wrap">
             {current.task || 'Появится с вашим следующим запросом'}
           </Text>
           <Box key="progress" flexDirection="row" alignItems="center" columnGap={1}>
             {Svg ? (
-              <Svg source={progressSvg(doneCount / Math.max(1, stages.length), 120)} alt={`${doneCount} из ${stages.length}`} width={120} height={6} />
+              <Svg
+                source={progressSvg(doneCount / Math.max(1, stages.length), 120)}
+                alt={`${doneCount} из ${stages.length}`}
+                width={120}
+                height={6}
+              />
             ) : (
               <Box key="bar" flexDirection="row">
                 <Text color={GREEN}>{'━'.repeat(filledCells)}</Text>
@@ -646,32 +736,38 @@ export const register: Register = on => {
             const mark: Mark = isSkipped ? 'skipped' : stage.status
             const lines = stageLines(id, stage, current.plan, isSkipped, detailed, narrow)
             const time = narrow ? '' : timeLabel(stage, now)
+            const heading = `${title}${isSkipped ? ' · пропущено' : ''}`
 
             return (
-              <Box key={id} flexDirection="column">
-                <Box key={`${id}-title`} flexDirection="row" alignItems="center" columnGap={1}>
-                  {icon(mark)}
-                  <Box key={`${id}-name`} flexGrow={1} flexShrink={1}>
-                    <Text bold={stage.status === 'active'} dimColor={stage.status === 'pending'} wrap="truncate-end">
-                      {title}
-                      {isSkipped ? ' · пропущено' : ''}
+              <Box key={id} flexDirection="row" columnGap={1}>
+                {icon(mark)}
+                <Box key={`${id}-body`} flexDirection="column" flexGrow={1} flexShrink={1}>
+                  <Box key={`${id}-head`} flexDirection="row" justifyContent="space-between" columnGap={1}>
+                    <Text bold={stage.status === 'active'} dimColor={stage.status === 'pending'}>
+                      {short(heading, room - time.length - 1)}
                     </Text>
+                    {time ? (
+                      <Text color={stage.status === 'active' ? BLUE : undefined} dimColor={stage.status !== 'active'}>
+                        {time}
+                      </Text>
+                    ) : null}
                   </Box>
-                  {time ? (
-                    <Text color={stage.status === 'active' ? BLUE : undefined} dimColor={stage.status !== 'active'}>
-                      {time}
-                    </Text>
-                  ) : null}
+                  {lines.map(line =>
+                    line.mark ? (
+                      <Box flexDirection="row" columnGap={1}>
+                        {icon(line.mark, true)}
+                        <Text dimColor={line.isDim}>{short(line.text, room - 3)}</Text>
+                      </Box>
+                    ) : (
+                      <Text
+                        color={line.color ?? (stage.status === 'active' ? BLUE : undefined)}
+                        dimColor={line.isDim && stage.status !== 'active'}
+                      >
+                        {short(line.text, room)}
+                      </Text>
+                    ),
+                  )}
                 </Box>
-                {lines.map(line => (
-                  <Box flexDirection="row" alignItems="center" columnGap={1}>
-                    {indent()}
-                    {line.mark ? icon(line.mark, 12) : null}
-                    <Text color={line.color} dimColor={line.isDim} wrap="truncate-end">
-                      {line.text}
-                    </Text>
-                  </Box>
-                ))}
               </Box>
             )
           })}
@@ -693,18 +789,12 @@ export const register: Register = on => {
             />
             {showPast
               ? past.map((item, index) => (
-                  <Box key={`past-${index}`} flexDirection="row" alignItems="center" columnGap={1}>
-                    {icon(item.isFailed ? 'failed' : item.done === item.total ? 'done' : 'skipped', 12)}
-                    <Box key={`past-${index}-name`} flexGrow={1} flexShrink={1}>
-                      <Text dimColor wrap="truncate-end">
-                        {item.task}
-                      </Text>
+                  <Box key={`past-${index}`} flexDirection="row" justifyContent="space-between" columnGap={1}>
+                    <Box key={`past-${index}-name`} flexDirection="row" columnGap={1}>
+                      {icon(item.isFailed ? 'failed' : item.done === item.total ? 'done' : 'skipped', true)}
+                      <Text dimColor>{short(item.task, room - (narrow ? 3 : 10))}</Text>
                     </Box>
-                    {narrow ? null : (
-                      <Text dimColor>
-                        {item.done}/{item.total} · {formatDuration(item.durationMs)}
-                      </Text>
-                    )}
+                    {narrow ? null : <Text dimColor>{formatDuration(item.durationMs)}</Text>}
                   </Box>
                 ))
               : null}

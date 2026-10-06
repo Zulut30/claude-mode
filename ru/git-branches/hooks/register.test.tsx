@@ -91,7 +91,7 @@ describe('разбор вывода', () => {
   })
 })
 
-test('панель: ветки, PR, изменения и сворачивание секций', async ($, on) => {
+test('панель: ветки, PR, изменения, удалённые и коммиты', async ($, on) => {
   mock.clock(on, { now: NOW })
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('process.run', (_, e) => {
@@ -116,7 +116,8 @@ test('панель: ветки, PR, изменения и сворачивани
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'git-branches', surface, ...PANE })
-    expect(await ui.find({ type: 'Link', text: 'acme/site' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'acme/site' })).toBeDefined()
+    expect(await ui.find({ type: 'Link', text: 'открыть на GitHub' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '↑2 не запушено' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '✎ 1 изменено · 1 в индексе · 1 новый' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '#12' })).toBeDefined()
@@ -124,11 +125,8 @@ test('панель: ветки, PR, изменения и сворачивани
     expect(await ui.find({ type: 'Text', text: 'только локально' })).toBeDefined()
     expect(await ui.find({ type: 'Link', text: 'Страница входа' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /проверки прошли · одобрено/ })).toBeDefined()
-    // Удалённые свёрнуты по умолчанию.
-    expect(await ui.find({ type: 'Link', text: 'origin/hotfix' })).toBeUndefined()
-    await ui.press({ key: 'toggle-remote' })
     expect(await ui.find({ type: 'Link', text: 'origin/hotfix' })).toBeDefined()
-    await ui.press({ key: 'toggle-remote' })
+    expect(await ui.find({ type: 'Text', text: '✓ рабочая копия чистая' })).toBeUndefined()
     await ui.unmount()
   }
 })
@@ -143,5 +141,30 @@ test('не git-папка — понятное сообщение', async ($, on
 
   const ui = await $.ui.mount({ plugin: 'git-branches', surface: 'desktop', ...PANE })
   expect(await ui.find({ type: 'Text', text: 'Здесь нет git-репозитория' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('длинный список: первые 5 веток и кнопка «Ещё N»', async ($, on) => {
+  mock.clock(on, { now: NOW })
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  const many = ['main\torigin/main\t\ta0\t' + T + '\tИван\tm']
+    .concat(Array.from({ length: 7 }, (_, i) => `feat-${i}\t\t\tb${i}\t${T - i * HOUR}\tИван\tf${i}`))
+    .join('\n')
+  on('process.run', (_, e) => {
+    const command = e.argv.join(' ')
+    if (command.startsWith('git for-each-ref') && command.endsWith('refs/heads')) {
+      return ok(many)
+    }
+
+    return ok(GIT[command] ?? '')
+  })
+
+  await $.command.run({ command: 'branches', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
+  const ui = await $.ui.mount({ plugin: 'git-branches', surface: 'desktop', ...PANE })
+  expect(await ui.find({ type: 'Text', text: 'ВЕТКИ · 7' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'feat-4' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'feat-5' })).toBeUndefined()
+  await ui.press({ key: 'more-local' })
+  expect(await ui.find({ type: 'Text', text: 'feat-6' })).toBeDefined()
   await ui.unmount()
 })

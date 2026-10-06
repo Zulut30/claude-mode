@@ -54,6 +54,8 @@ declare module 'claude-code' {
       isDetailed: boolean
       history: PastTask[]
       isHistoryOpen: boolean
+      /** Whether Claude's turn is running right now. */
+      isWorking: boolean
     }
   }
 }
