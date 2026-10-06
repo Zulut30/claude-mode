@@ -1,9 +1,19 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { arrange, parseSteps } from './register'
+import { chipRoom, clip, parseReply, parseSteps } from './register'
 
 const ANSWER = 'Готово: добавил проверку пароля в login.ts и тест в login.test.ts, все тесты проходят.'
 const MODEL_TEXT = '1. Запусти тесты логина ещё раз\n- «Добавь ту же проверку в signup.ts»\nОткрой черновой PR.\nЧетвёртый лишний'
+/** Ответ модели целиком: цель, «ждёт вас» и подсказки, в обёртке, как модели любят. */
+const MODEL_JSON = [
+  '```json',
+  JSON.stringify({
+    goal: 'Страница входа с проверкой пароля.',
+    waiting: 'подтвердить удаление token-speed',
+    steps: ['Запусти тесты логина ещё раз', '«Добавь ту же проверку в signup.ts»', 'Открой черновой PR.', 'Четвёртый лишний'],
+  }),
+  '```',
+].join('\n')
 const USAGE = { input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
 
 const BAND = {
@@ -29,13 +39,23 @@ describe('разбор и раскладка', () => {
     expect(parseSteps('Вот варианты:\nЗапусти линтер')).toEqual(['Запусти линтер'])
   })
 
-  test('в одну строку, если влезает; иначе столбиком; мало строк — режем поровну', () => {
-    const labels = ['1 · Запусти тесты логина ещё раз', '2 · Добавь ту же проверку в signup.ts', '3 · Открой черновой PR']
-    expect(arrange(labels, 160, 0, 10).isRow).toBe(true)
-    expect(arrange(labels, 80, 0, 10)).toEqual({ isRow: false, room: 78 })
-    const tight = arrange(labels, 80, 0, 2)
-    expect(tight.isRow).toBe(true)
-    expect(tight.room).toBeLessThan(24)
+  test('JSON модели: цель и «ждёт вас» очищены, подсказки как построчно; не JSON — только подсказки', () => {
+    expect(parseReply(MODEL_JSON)).toEqual({
+      goal: 'Страница входа с проверкой пароля',
+      waiting: 'подтвердить удаление token-speed',
+      items: ['Запусти тесты логина ещё раз', 'Добавь ту же проверку в signup.ts', 'Открой черновой PR'],
+    })
+    expect(parseReply('{"goal": "", "waiting": "", "steps": []}')).toEqual({ items: [] })
+    expect(parseReply(MODEL_TEXT)).toEqual({ items: ['Запусти тесты логина ещё раз', 'Добавь ту же проверку в signup.ts', 'Открой черновой PR'] })
+    expect(clip('«Очень длинная цель, которая никак не помещается»', 20)).toBe('Очень длинная цель…')
+    expect(clip('Страница входа', 20)).toBe('Страница входа')
+  })
+
+  test('место на подсказку: поровну в одну строку; тесно — перенос с полной длиной, но не длиннее 48', () => {
+    expect(chipRoom(3, 160)).toBe(41)
+    expect(chipRoom(3, 80)).toBe(48)
+    expect(chipRoom(3, 30)).toBe(18)
+    expect(chipRoom(2, 200)).toBe(48)
   })
 })
 
@@ -46,10 +66,12 @@ test('после ответа — подсказки над полем ввод�
   on('agent.list', () => ({ value: [] }))
   on('session.messages', () => ({ value: [{ role: 'user', text: 'добавь проверку пароля', toolUses: [] }] }))
   const asked: string[] = []
+  const prompts: string[] = []
   on('model.complete', (_, e) => {
     asked.push(e.model)
+    prompts.push(e.prompt)
 
-    return { value: { isAnswered: true, text: MODEL_TEXT, usage: USAGE } }
+    return { value: { isAnswered: true, text: MODEL_JSON, usage: USAGE } }
   })
   const filled: string[] = []
   on('prompt.fill', (_, e) => {
@@ -73,7 +95,13 @@ test('после ответа — подсказки над полем ввод�
     const ui = await $.ui.mount({ plugin: 'next-steps', surface, ...BAND })
     expect(await ui.find({ type: 'Text', text: 'соседний мод' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^ДАЛЬШЕ$/ })).toBeDefined()
+    // Над подсказками — цель и чего ждёт ассистент.
+    expect(await ui.find({ type: 'Text', text: /^Страница входа с проверкой пароля$/ })).toBeDefined()
+    expect((await ui.find({ type: 'Text', text: /^ждёт вас: подтвердить удаление token-speed$/ }))?.props.color).toBe('#d29922')
     expect((await ui.find({ key: 'step-1' }))?.text).toBe('1 · Запусти тесты логина ещё раз')
+    // Подсказки — кнопки с рамкой (видно, что жмутся), «скрыть» — тихий ✕.
+    expect((await ui.find({ key: 'step-1' }))?.props.plain).toBeUndefined()
+    expect((await ui.find({ key: 'dismiss' }))?.text).toBe('✕')
     expect((await ui.find({ key: 'step-3' }))?.text).toBe('3 · Открой черновой PR')
 
     filled.length = 0
@@ -81,6 +109,12 @@ test('после ответа — подсказки над полем ввод�
     expect(filled).toEqual(['Добавь ту же проверку в signup.ts'])
     await ui.unmount()
   }
+
+  // Цель держится между ходами: следующий запрос к модели её получает.
+  expect(prompts[0]).toMatch(/^Прежняя цель: нет/)
+  await $.turn.complete({ turnId: 't2', answer: ANSWER, reason: 'answer', durationMs: 1000, isAborted: false })
+  await settle()
+  expect(prompts[1]).toMatch(/^Прежняя цель: Страница входа с проверкой пароля/)
 
   // Пока Claude работает, полоса подсказок не видна.
   const busy = await $.ui.mount({ plugin: 'next-steps', surface: 'desktop', ...BAND, props: { ...BAND.props, isWorking: true } })

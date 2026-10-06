@@ -1,9 +1,19 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { arrange, parseSteps } from './register'
+import { chipRoom, clip, parseReply, parseSteps } from './register'
 
 const ANSWER = 'Done: added a password check to login.ts and a test to login.test.ts, all tests pass.'
 const MODEL_TEXT = '1. Rerun the login tests\n- "Add the same check to signup.ts"\nOpen a draft PR.\nA fourth one too many'
+/** The model's whole reply: goal, "waiting on you" and suggestions, in a fence, as models like to. */
+const MODEL_JSON = [
+  '```json',
+  JSON.stringify({
+    goal: 'Login page with password checks.',
+    waiting: 'confirm deleting token-speed',
+    steps: ['Rerun the login tests', '"Add the same check to signup.ts"', 'Open a draft PR.', 'A fourth one too many'],
+  }),
+  '```',
+].join('\n')
 const USAGE = { input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
 
 const BAND = {
@@ -29,13 +39,23 @@ describe('parsing and layout', () => {
     expect(parseSteps('Here are some options:\nRun the linter')).toEqual(['Run the linter'])
   })
 
-  test('one line if it fits; otherwise a column; too few rows — trim evenly', () => {
-    const labels = ['1 · Rerun the login tests', '2 · Add the same check to signup.ts', '3 · Open a draft PR']
-    expect(arrange(labels, 160, 0, 10).isRow).toBe(true)
-    expect(arrange(labels, 80, 0, 10)).toEqual({ isRow: false, room: 78 })
-    const tight = arrange(labels, 80, 0, 2)
-    expect(tight.isRow).toBe(true)
-    expect(tight.room).toBeLessThan(24)
+  test('model JSON: goal and "waiting on you" cleaned, suggestions as line by line; not JSON — suggestions only', () => {
+    expect(parseReply(MODEL_JSON)).toEqual({
+      goal: 'Login page with password checks',
+      waiting: 'confirm deleting token-speed',
+      items: ['Rerun the login tests', 'Add the same check to signup.ts', 'Open a draft PR'],
+    })
+    expect(parseReply('{"goal": "", "waiting": "", "steps": []}')).toEqual({ items: [] })
+    expect(parseReply(MODEL_TEXT)).toEqual({ items: ['Rerun the login tests', 'Add the same check to signup.ts', 'Open a draft PR'] })
+    expect(clip('"A very long goal, which never fits at all"', 20)).toBe('A very long goal…')
+    expect(clip('Login page', 20)).toBe('Login page')
+  })
+
+  test('room per suggestion: shared evenly on one line; when tight — wrap at full length, but no longer than 48', () => {
+    expect(chipRoom(3, 160)).toBe(41)
+    expect(chipRoom(3, 80)).toBe(48)
+    expect(chipRoom(3, 30)).toBe(18)
+    expect(chipRoom(2, 200)).toBe(48)
   })
 })
 
@@ -46,10 +66,12 @@ test('after a reply — suggestions above the input; a click drafts one, 0 hides
   on('agent.list', () => ({ value: [] }))
   on('session.messages', () => ({ value: [{ role: 'user', text: 'add a password check', toolUses: [] }] }))
   const asked: string[] = []
+  const prompts: string[] = []
   on('model.complete', (_, e) => {
     asked.push(e.model)
+    prompts.push(e.prompt)
 
-    return { value: { isAnswered: true, text: MODEL_TEXT, usage: USAGE } }
+    return { value: { isAnswered: true, text: MODEL_JSON, usage: USAGE } }
   })
   const filled: string[] = []
   on('prompt.fill', (_, e) => {
@@ -73,7 +95,13 @@ test('after a reply — suggestions above the input; a click drafts one, 0 hides
     const ui = await $.ui.mount({ plugin: 'next-steps', surface, ...BAND })
     expect(await ui.find({ type: 'Text', text: /^neighbour mod$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^NEXT$/ })).toBeDefined()
+    // Above the suggestions: the goal and what the assistant is waiting on.
+    expect(await ui.find({ type: 'Text', text: /^Login page with password checks$/ })).toBeDefined()
+    expect((await ui.find({ type: 'Text', text: /^waiting on you: confirm deleting token-speed$/ }))?.props.color).toBe('#d29922')
     expect((await ui.find({ key: 'step-1' }))?.text).toBe('1 · Rerun the login tests')
+    // Suggestions are framed buttons (clearly clickable); "hide" is a quiet ✕.
+    expect((await ui.find({ key: 'step-1' }))?.props.plain).toBeUndefined()
+    expect((await ui.find({ key: 'dismiss' }))?.text).toBe('✕')
     expect((await ui.find({ key: 'step-3' }))?.text).toBe('3 · Open a draft PR')
 
     filled.length = 0
@@ -81,6 +109,12 @@ test('after a reply — suggestions above the input; a click drafts one, 0 hides
     expect(filled).toEqual(['Add the same check to signup.ts'])
     await ui.unmount()
   }
+
+  // The goal carries across turns: the next model request gets it.
+  expect(prompts[0]).toMatch(/^Previous goal: none/)
+  await $.turn.complete({ turnId: 't2', answer: ANSWER, reason: 'answer', durationMs: 1000, isAborted: false })
+  await settle()
+  expect(prompts[1]).toMatch(/^Previous goal: Login page with password checks/)
 
   // While Claude is working, the suggestions band is hidden.
   const busy = await $.ui.mount({ plugin: 'next-steps', surface: 'desktop', ...BAND, props: { ...BAND.props, isWorking: true } })

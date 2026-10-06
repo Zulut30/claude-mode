@@ -8,17 +8,24 @@ import type { NextSteps } from '../types'
 const MODEL = 'haiku'
 const MAX_ITEMS = 3
 /** The length we ask the model for; a line longer than MAX_KEPT is dropped, not cut: a truncated draft is half a request. */
-const MAX_CHARS = 60
+const MAX_CHARS = 45
 const MAX_KEPT = 120
+/** Longer than this isn't shown on the button; the full text goes in as the draft. */
+const MAX_LABEL = 48
+/** The goal and "waiting on you" stay short, on one line. */
+const MAX_GOAL = 60
+const MAX_WAITING = 70
+
+const BLUE = '#58a6ff'
+const AMBER = '#d29922'
 /** A shorter reply isn't worth a model call. */
 const MIN_ANSWER = 40
 /** Key in the mod's store: whether suggestions are off (survives restarts). */
 const OFF_KEY = 'isOff'
 
-const BLUE = '#58a6ff'
-
 const steps = atom({ plugin: 'next-steps', key: 'steps' } as const, null as NextSteps | null)
 const isOff = atom({ plugin: 'next-steps', key: 'isOff' } as const, false)
+const goal = atom({ plugin: 'next-steps', key: 'goal' } as const, '')
 
 export const register: Register = on => {
   // The turn the suggestions still belong to: a new prompt or turn moves it.
@@ -112,60 +119,62 @@ export const register: Register = on => {
     const rest = await next(e)
     hasSurvey = e.props.hasSurvey
     const current = await read($, steps)
-    if (e.props.hasSurvey || e.props.isWorking || !current || current.items.length === 0) {
+    if (e.props.hasSurvey || e.props.isWorking || !current || (current.items.length === 0 && !current.waiting)) {
       return rest
     }
 
     const { Box, Text, Button } = $.ui.resolve(e)
     const columns = e.props.bodyColumns
-    const items = current.items.map((text, i) => `${i + 1} · ${text}`)
-    // A native desktop button is about 4 cells wider than its label.
-    const pad = e.surface === 'terminal' ? 0 : 4
-    const layout = arrange(items, columns, pad, e.props.maxRows)
+    const room = chipRoom(current.items.length, columns)
+    const dismiss = <Button key="dismiss" plain dimColor label="✕" onPress={() => update($, steps, () => null)} />
 
-    const pick = (label: string, i: number) => (
-      <Button
-        key={`step-${i + 1}`}
-        plain
-        label={short(label, layout.room)}
-        onPress={() => void $.prompt.fill({ text: current.items[i] ?? '' }).catch(() => undefined)}
-      />
-    )
-    const dismiss = <Button key="dismiss" plain dimColor label="0 · hide" onPress={() => update($, steps, () => null)} />
-    const title = (
-      <Text key="title" color={BLUE} bold>
-        NEXT
-      </Text>
-    )
+    // The goal and "waiting on you" on one line above the suggestions: where we are and whose move it is.
+    const goalRoom = Math.max(12, current.waiting ? Math.floor(columns * 0.4) : columns - 4)
+    const goalWidth = current.goal ? Math.min([...current.goal].length, goalRoom) + 5 : 0
+    const recap =
+      current.goal || current.waiting ? (
+        <Box key="next-steps-recap" flexDirection="row" alignItems="center" columnGap={3}>
+          {current.goal ? (
+            <Box key="goal" flexDirection="row" columnGap={1}>
+              <Text color={BLUE}>◆</Text>
+              <Text>{short(current.goal, goalRoom)}</Text>
+            </Box>
+          ) : null}
+          {current.waiting ? (
+            <Box key="waiting" flexDirection="row" columnGap={1}>
+              <Text color={AMBER}>⏳</Text>
+              <Text color={AMBER}>{`waiting on you: ${short(current.waiting, Math.max(12, columns - goalWidth - 20))}`}</Text>
+            </Box>
+          ) : null}
+          {current.items.length === 0 ? dismiss : null}
+        </Box>
+      ) : null
 
+    // Suggestions: a quiet title, real buttons (clearly clickable), ✕ at the end.
+    // If they don't fit the width they wrap, instead of stacking down the whole band.
     return (
       <Box flexDirection="column">
         {rest}
-        {layout.isRow ? (
-          <Box key="next-steps" flexDirection="row" alignItems="center" columnGap={2}>
-            {title}
-            {items.map(pick)}
+        {recap}
+        {current.items.length > 0 ? (
+          <Box key="next-steps" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={1}>
+            <Text key="title" dimColor bold>
+              NEXT
+            </Text>
+            {current.items.map((text, i) => (
+              <Button
+                key={`step-${i + 1}`}
+                label={`${i + 1} · ${short(text, room)}`}
+                onPress={() => void $.prompt.fill({ text }).catch(() => undefined)}
+              />
+            ))}
             {dismiss}
           </Box>
-        ) : (
-          <Box key="next-steps" flexDirection="column">
-            <Box key="next-steps-head" flexDirection="row" justifyContent="space-between" alignItems="center">
-              {title}
-              {dismiss}
-            </Box>
-            {items.map((label, i) => (
-              <Box key={`step-row-${i + 1}`} flexDirection="row" paddingLeft={2}>
-                {pick(label, i)}
-              </Box>
-            ))}
-          </Box>
-        )}
+        ) : null}
       </Box>
     )
   })
 }
-
-const width = (text: string) => [...text].length
 
 export const short = (text: string, max: number) => {
   const chars = [...text.replace(/\s+/g, ' ').trim()]
@@ -174,20 +183,14 @@ export const short = (text: string, max: number) => {
 }
 
 /**
- * Layout: everything on one line if it fits; otherwise one prompt per line if the band has the rows;
- * otherwise one line with every prompt trimmed evenly. `room` is how many cells a prompt's label gets.
+ * Cells for a suggestion's text: shared evenly so all fit on one line with the title and ✕;
+ * if that leaves under 20, the buttons wrap and each gets up to MAX_LABEL.
+ * The button frame and "1 · " take about 8 cells.
  */
-export const arrange = (labels: readonly string[], columns: number, pad: number, maxRows: number) => {
-  const fixed = width('NEXT') + width('0 · hide') + pad + 2 * (labels.length + 1)
-  const natural = fixed + labels.reduce((sum, label) => sum + width(label) + pad, 0)
-  if (natural <= columns) {
-    return { isRow: true, room: Math.max(...labels.map(width)) }
-  }
-  if (maxRows >= labels.length + 1) {
-    return { isRow: false, room: Math.max(8, columns - 2 - pad) }
-  }
+export const chipRoom = (count: number, columns: number) => {
+  const shared = Math.floor((columns - 'NEXT'.length - 3 - (count + 1)) / Math.max(1, count)) - 8
 
-  return { isRow: true, room: Math.max(8, Math.floor((columns - fixed) / labels.length) - pad) }
+  return Math.min(MAX_LABEL, shared >= 20 ? shared : Math.max(12, columns - 12))
 }
 
 async function suggest($: EngineInterface, turnId: string, answer: string, current: () => string) {
@@ -203,28 +206,76 @@ async function suggest($: EngineInterface, turnId: string, answer: string, curre
     all.pop()
   }
   const recent = all.slice(-6)
+  const previous = await read($, goal)
+  // One call for everything: the goal, "waiting on you" and the suggestions — no extra model calls.
   const reply = await $.model.complete({
     model: MODEL,
-    maxTokens: 200,
+    maxTokens: 300,
     timeoutMs: 20_000,
     system:
-      'You guess what a person will write to their coding assistant next, from an excerpt of their session. ' +
-      `Give 2 or 3 short, concrete prompts — each an instruction in the imperative, no longer than ${MAX_CHARS} characters, ` +
-      'about what just happened (name the file, test or function). Write them in the same language the person writes in. ' +
-      'No numbering, quotes or explanations: one per line and nothing else. If there is no sensible next step, reply with the single word NONE.\n' +
-      'Example reply:\nRerun the login tests\nAdd the same check to signup.ts\nOpen a draft PR',
+      'You help a person keep track of their session with a coding assistant. From an excerpt of the session, reply with JSON only, shaped ' +
+      '{"goal": "...", "waiting": "...", "steps": ["...", "..."]}. ' +
+      'goal: the overall aim of the session in 3–8 words; if the previous goal clearly did not change, repeat it. ' +
+      `waiting: what the assistant is waiting on from the person right now (an answer, a confirmation, a manual check), no longer than ${MAX_WAITING} characters; an empty string if nothing. ` +
+      `steps: 2 or 3 prompts the person is most likely to send next, in their own voice: an instruction in the imperative, no longer than ${MAX_CHARS} characters. ` +
+      'Rules for steps. 1) If the assistant\'s reply ends with a question or an offer ("Shall I?", "Tell me if…"), the first one agrees with specifics ("Yes, delete the token-speed folder"). ' +
+      '2) Never suggest what the assistant already did in this reply. ' +
+      '3) Name concrete things: a file, test, function or command; no vague "continue" or "improve the code". ' +
+      'Write everything in the same language the person writes in. No sensible next step — steps: [].\n' +
+      'Example: {"goal": "Login page with password checks", "waiting": "confirm deleting token-speed", "steps": ["Yes, delete the token-speed folder", "Rerun the login tests"]}',
     prompt: [
+      `Previous goal: ${previous || 'none'}`,
       `<transcript>\n${recent.map(message => `[${message.role === 'user' ? 'person' : 'assistant'}] ${message.text.slice(0, 800)}`).join('\n')}\n</transcript>`,
       `<latest_reply>\n${answer.slice(0, 2000)}\n</latest_reply>`,
-      'Write the prompts the person is most likely to send next: only the lines, not a reply to the conversation.',
+      'Reply with the JSON as shown, no explanations.',
     ].join('\n\n'),
   })
   if (!reply.isAnswered) {
     return
   }
-  const items = parseSteps(reply.text)
+  const found = parseReply(reply.text)
   // The check is inside the write: a new prompt or turn that arrived meanwhile always wins.
-  await update($, steps, before => (current() !== turnId ? before : items.length > 0 ? { turnId, items } : null))
+  await update($, steps, before =>
+    current() !== turnId ? before : found.items.length > 0 || found.waiting ? { turnId, ...found } : null,
+  )
+  if (found.goal) {
+    await update($, goal, () => found.goal ?? '')
+  }
+}
+
+/** One line without quotes or a trailing period; longer than `max` — cut at a word. */
+export const clip = (text: string, max: number) => {
+  const line = text.replace(/\s+/g, ' ').replace(/^["'«“]+|["'»”]+$/g, '').replace(/\.$/, '').trim()
+  if ([...line].length <= max) {
+    return line
+  }
+  const cut = line.slice(0, max - 1)
+  // Cut at the last whole word (unless it's too far back), with no dangling comma before the "…".
+  const space = line[max - 1] === ' ' ? cut.length : cut.lastIndexOf(' ')
+  const word = space > max / 2 ? cut.slice(0, space) : cut
+
+  return `${word.replace(/[\s,;:—-]+$/, '')}…`
+}
+
+/** The model's JSON → goal, "waiting on you" and suggestions; not JSON — read the suggestions line by line. */
+export function parseReply(text: string): { items: string[]; goal?: string; waiting?: string } {
+  const start = text.indexOf('{')
+  const end = text.lastIndexOf('}')
+  if (start >= 0 && end > start) {
+    try {
+      const data = JSON.parse(text.slice(start, end + 1)) as Record<string, unknown>
+      const field = (key: string, max: number) => (typeof data[key] === 'string' ? clip(data[key] as string, max) : '')
+      const list = Array.isArray(data.steps) ? data.steps.filter((one): one is string => typeof one === 'string') : []
+      const goalText = field('goal', MAX_GOAL)
+      const waitingText = field('waiting', MAX_WAITING)
+
+      return { items: parseSteps(list.join('\n')), ...(goalText ? { goal: goalText } : {}), ...(waitingText ? { waiting: waitingText } : {}) }
+    } catch {
+      // Not JSON — read it line by line below.
+    }
+  }
+
+  return { items: parseSteps(text) }
 }
 
 /** The model's lines, stripped of bullets, numbers and quotes; three at most. Preambles and "nothing to add" are dropped. */

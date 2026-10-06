@@ -4,15 +4,15 @@ Mods for **Claude Code**: the Code tab of the desktop app and the terminal. Each
 
 [Русская версия →](README.ru.md)
 
-| | Mod | What it gives you | Where |
-| --- | --- | --- | --- |
-| 📊 | [**usage-band**](en/usage-band) | Context fill, memory files, subscription limits (5 hours and week), response speed and a prompt-cache timer | Band above the prompt |
-| 🗺️ | [**roadmap**](en/roadmap) | Stages of the current task: context → work → checks → tests → push → deploy, plus Claude's plan | “Roadmap” pane or a band under the chat |
-| 🌿 | [**git-branches**](en/git-branches) | Branches, sync with the remote, GitHub pull requests and commits, GitLens-style | “Branches” pane |
-| 🧭 | [**context-inspector**](en/context-inspector) | What fills the context window and what you can free | “Context” pane |
-| 🎛️ | [**command-deck**](en/command-deck) | The main slash commands with a one-line why and one-click run | “Commands” pane |
-| ➡️ | [**next-steps**](en/next-steps) | 2–3 likely next prompts after each reply: click one to draft it | Line above the prompt |
-| ⚡ | [**token-speed**](en/token-speed) | *Superseded by usage-band's SPEED column — don't install both* | Status line |
+| | Mod | What it gives you | Where | Command | Network |
+| --- | --- | --- | --- | --- | --- |
+| 📊 | [**usage-band**](en/usage-band) | Context fill, memory files, subscription limits (5 hours and week), response speed and a prompt-cache timer | Band above the prompt | — | no |
+| 🗺️ | [**roadmap**](en/roadmap) | Stages of the current task: context → work → checks → tests → push → deploy, plus Claude's plan | “Roadmap” pane or a band under the chat | `/roadmap` | no |
+| 🌿 | [**git-branches**](en/git-branches) | Branches, sync with the remote, GitHub pull requests and commits, GitLens-style | “Branches” pane | `/branches` | `gh`, `git fetch` |
+| 🧭 | [**context-inspector**](en/context-inspector) | What fills the context window and what you can free | “Context” pane | `/inspector` | no |
+| 🎛️ | [**command-deck**](en/command-deck) | The main slash commands with a one-line why and one-click run | “Commands” pane | `/deck` | no |
+| ➡️ | [**next-steps**](en/next-steps) | The session goal, what Claude is waiting on from you, and 2–3 next prompts as buttons; a click drafts one | Line above the prompt | `/next` | Haiku via Claude Code |
+| ⚡ | [**token-speed**](en/token-speed) | *Superseded by usage-band's SPEED column — don't install both* | Status line | — | no |
 
 Every mod comes in English ([`en/`](en)) and Russian ([`ru/`](ru)). Pick one language per mod: both versions share the same name.
 
@@ -86,7 +86,8 @@ Context 42%                                           ↻
 **next-steps** — above the prompt after a reply:
 
 ```
-NEXT  1 · Run the login tests again   2 · Add the same check to signup.ts   3 · Open a draft PR   0 · hide
+◆ Login page with password checks     ⏳ waiting on you: confirm deleting token-speed
+NEXT [ 1 · Yes, delete the token-speed folder ] [ 2 · Rerun the login tests ] [ 3 · Open a draft PR ] ✕
 ```
 
 ## Installation
