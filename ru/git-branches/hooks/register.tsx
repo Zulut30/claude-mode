@@ -577,7 +577,7 @@ export const register: Register = on => {
           </Box>
         </Box>
 
-        <Box key="current" flexDirection="column" marginTop={1}>
+        <Box key="current" flexDirection="column" marginTop={1} {...(Svg ? { backgroundColor: '#3fb9501a', paddingX: 1 } : {})}>
           {row(
             'current-branch',
             'current',

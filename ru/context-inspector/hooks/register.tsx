@@ -427,7 +427,12 @@ export const register: Register = on => {
           <Text dimColor>автосжатие при {formatTokens(data.autoCompactAt)}</Text>
         ) : null}
 
-        <Box key="tips" flexDirection="column" marginTop={1}>
+        <Box
+          key="tips"
+          flexDirection="column"
+          marginTop={1}
+          {...(Svg ? { backgroundColor: tipList[0]?.level === 'warn' ? '#d299221f' : '#8b949e1a', paddingX: 1 } : {})}
+        >
           {tipList.map((tip, index) => (
             <Box key={`tip-${index}`} flexDirection="row" columnGap={1}>
               <Text color={tipColor[tip.level]}>{tipMark[tip.level]}</Text>

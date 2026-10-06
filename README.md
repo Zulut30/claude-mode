@@ -83,8 +83,8 @@ MCP SERVERS · 3
 **token-speed** — under the prompt:
 
 ```
-⚡ ≈48 tok/s                            while it answers (estimate)
-⚡ 52 tok/s · 1,240 tokens in 24 s      after it answers (exact, from the API)
+⚡ ≈48 tok/s ▂▄▆                                 while it answers: the last 2 seconds
+⚡ 52 tok/s ▂▄▆▅▇ · 3,400 tokens in 1 min 5 s   after: the average for the turn, exact from the API
 ```
 
 ## Install

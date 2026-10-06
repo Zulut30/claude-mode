@@ -771,7 +771,14 @@ export const register: Register = on => {
             const heading = `${title}${isSkipped ? ' · пропущено' : ''}`
 
             return (
-              <Box key={id} flexDirection="row" columnGap={1}>
+              <Box
+                key={id}
+                flexDirection="row"
+                columnGap={1}
+                {...(Svg && (stage.status === 'active' || stage.status === 'failed')
+                  ? { backgroundColor: stage.status === 'active' ? '#58a6ff1a' : '#f851491a', paddingX: 1 }
+                  : {})}
+              >
                 {icon(mark)}
                 <Box key={`${id}-body`} flexDirection="column" flexGrow={1} flexShrink={1}>
                   <Box key={`${id}-head`} flexDirection="row" justifyContent="space-between" columnGap={1}>
