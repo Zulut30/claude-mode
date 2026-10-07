@@ -1,6 +1,6 @@
 {
   "name": "git-branches",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "GitLens-style Branches pane: local and remote branches, ahead/behind, working-tree changes, GitHub pull requests and recent commits",
   "author": {
     "name": "Zulut30",

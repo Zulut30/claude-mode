@@ -1,7 +1,7 @@
 {
   "name": "usage-band",
-  "version": "0.3.0",
-  "description": "Band above the prompt: context fill, memory files, subscription limits (5h and week), model response speed and a prompt-cache timer",
+  "version": "0.4.0",
+  "description": "Band above the prompt: context fill, memory files, subscription limits (5h and week), model response speed and a prompt-cache timer; hide the columns you don't need with /band",
   "author": {
     "name": "Zulut30",
     "url": "https://github.com/Zulut30"

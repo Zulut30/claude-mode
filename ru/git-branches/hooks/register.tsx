@@ -264,10 +264,34 @@ const loadSnapshot = async ($: EngineInterface, isForced: boolean): Promise<GitS
 
 let inflight: Promise<GitSnapshot | null> | null = null
 
-/** Перечитать репозиторий; параллельные вызовы ждут один и тот же. `isForced` — и список PR тоже, не глядя на кэш. */
-const refresh = ($: EngineInterface, isForced = false) => {
-  inflight ??= (async () => {
-    await update($, isLoading, () => true)
+/** Сколько обновлений и fetch идёт сейчас: «обновляю…» горит, пока идёт хоть одно. */
+let busy = 0
+
+/** Работа под индикатором загрузки; перекрывающиеся вызовы не гасят его друг другу. */
+const whileLoading = async <T,>($: EngineInterface, work: () => Promise<T>): Promise<T> => {
+  busy += 1
+  await update($, isLoading, () => busy > 0)
+  try {
+    return await work()
+  } finally {
+    busy -= 1
+    await update($, isLoading, () => busy > 0)
+  }
+}
+
+/**
+ * Перечитать репозиторий; параллельные вызовы ждут один и тот же. `isForced` — и список PR тоже,
+ * не глядя на кэш. `isFresh` — не брать уже идущее чтение: дождаться его и прочитать заново.
+ */
+const refresh = ($: EngineInterface, isForced = false, isFresh = false): Promise<GitSnapshot | null> => {
+  if (inflight && !isFresh) {
+    return inflight
+  }
+
+  const previous = inflight
+  const run: Promise<GitSnapshot | null> = whileLoading($, async () => {
+    // Прошлое чтение ложится первым: его снимок не перепишет свежий.
+    await previous?.catch(() => null)
     try {
       const next = await loadSnapshot($, isForced)
       await update($, snapshot, () => next)
@@ -275,26 +299,31 @@ const refresh = ($: EngineInterface, isForced = false) => {
       return next
     } catch {
       return null
-    } finally {
-      await update($, isLoading, () => false)
+    }
+  }).finally(() => {
+    if (inflight === run) {
       inflight = null
     }
-  })()
+  })
+  inflight = run
 
-  return inflight
+  return run
 }
 
-const fetchAll = async ($: EngineInterface) => {
-  await update($, isLoading, () => true)
-  const result = await $.process
-    .run(['git', 'fetch', '--all', '--prune'], { timeoutMs: 120_000 })
-    .catch(() => ({ exitCode: 1, stderr: 'git не запустился' }))
-  if (result.exitCode !== 0) {
-    $.ui.toast(`git fetch не удался: ${result.stderr.trim().split('\n')[0] ?? ''}`)
-  }
+const fetchAll = ($: EngineInterface) =>
+  whileLoading($, async () => {
+    // Идущее фоновое чтение — до fetch: иначе его снимок, начатый до fetch, лёг бы последним.
+    await inflight?.catch(() => null)
+    const result = await $.process
+      .run(['git', 'fetch', '--all', '--prune'], { timeoutMs: 120_000 })
+      .catch(() => ({ exitCode: 1, stderr: 'git не запустился' }))
+    if (result.exitCode !== 0) {
+      $.ui.toast(`git fetch не удался: ${result.stderr.trim().split('\n')[0] ?? ''}`)
+    }
 
-  return refresh($, true)
-}
+    // Только новое чтение, начатое после fetch, и с PR.
+    return refresh($, true, true)
+  })
 
 const isPaneOpen = async ($: EngineInterface) => (await $.ui.panes().catch(() => [])).some(pane => pane.id === PANE)
 

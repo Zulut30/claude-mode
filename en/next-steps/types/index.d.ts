@@ -1,9 +1,15 @@
+/** One suggestion: a short caption for the button and the full prompt that goes in as the draft. */
+export type NextStep = {
+  label: string
+  prompt: string
+}
+
 /** Suggestions after a reply: which turn they belong to, the prompts, the session goal and what the assistant waits on. */
 export type NextSteps = {
   /** The turn they were suggested after: a new prompt or turn clears them. */
   turnId: string
-  /** 0–3 prompts, each a ready draft. */
-  items: string[]
+  /** 0–3 suggestions. */
+  items: NextStep[]
   /** The overall aim of the session in a few words. */
   goal?: string
   /** What the assistant is waiting on from the person right now; absent — nothing. */

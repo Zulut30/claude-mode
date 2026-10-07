@@ -18,6 +18,8 @@ WEEK                     SPEED                    CACHE
 
 Bar colors: green below 70%, yellow 70–89%, red from 90%. Refreshes after every turn; the countdowns tick every minute, the live speed once a second.
 
-**No commands** — the band shows up by itself. **Reads** only the session figures and the model's response stream from Claude Code. **Runs nothing** and makes no network calls.
+**Commands:** the band shows up by itself; `/band` lists which columns are shown, `/band hide cache` hides a column, `/band show cache` brings it back (context, memory, limits, speed, cache). The remaining columns share the row evenly; your choice is remembered across sessions. The columns can also be switched with buttons in the Mods pane ([mod-switch](../mod-switch/README.md)).
+
+**Reads** only the session figures and the model's response stream from Claude Code. **Runs nothing** and makes no network calls. **Stores** only the list of hidden columns in Claude Code's storage.
 
 Installation: see the [main README](../../README.md#installation).

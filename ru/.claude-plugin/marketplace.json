@@ -1,0 +1,144 @@
+{
+  "name": "claude-mode-ru",
+  "description": "Моды для Claude Code на русском: полоса над полем ввода, панели «Дорожная карта», «Ветки», «Контекст», «Команды» и «Моды», подсказки «Дальше» и страховка от опасных команд",
+  "owner": {
+    "name": "Zulut30"
+  },
+  "plugins": [
+    {
+      "name": "usage-band",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/Zulut30/claude-mode.git",
+        "path": "ru/usage-band"
+      },
+      "description": "Полоса над полем ввода: заполнение контекста, файлы памяти, лимиты подписки (5 ч и неделя), скорость ответа и таймер кэша промпта",
+      "version": "0.4.0",
+      "category": "monitoring",
+      "tags": [
+        "context",
+        "limits",
+        "speed",
+        "cache",
+        "band"
+      ]
+    },
+    {
+      "name": "roadmap",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/Zulut30/claude-mode.git",
+        "path": "ru/roadmap"
+      },
+      "description": "Панель «Дорожная карта»: стадии задачи (контекст → выполнение → проверка → тест → пуш → деплой) отмечаются сами по действиям Claude, плюс план Claude",
+      "version": "0.2.1",
+      "category": "productivity",
+      "tags": [
+        "tasks",
+        "plan",
+        "pane"
+      ]
+    },
+    {
+      "name": "git-branches",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/Zulut30/claude-mode.git",
+        "path": "ru/git-branches"
+      },
+      "description": "Панель «Ветки» в духе GitLens: локальные и удалённые ветки, опережение/отставание, изменения, pull request'ы GitHub и последние коммиты",
+      "version": "0.2.1",
+      "category": "git",
+      "tags": [
+        "git",
+        "github",
+        "branches",
+        "pull-requests",
+        "pane"
+      ]
+    },
+    {
+      "name": "context-inspector",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/Zulut30/claude-mode.git",
+        "path": "ru/context-inspector"
+      },
+      "description": "Панель «Контекст»: из чего состоит контекстное окно, какие MCP-серверы, скиллы и файлы памяти его занимают и что можно освободить",
+      "version": "0.2.0",
+      "category": "monitoring",
+      "tags": [
+        "context",
+        "mcp",
+        "skills",
+        "memory",
+        "pane"
+      ]
+    },
+    {
+      "name": "command-deck",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/Zulut30/claude-mode.git",
+        "path": "ru/command-deck"
+      },
+      "description": "Панель «Команды»: главные слэш-команды с коротким пояснением, зачем каждая, и кнопкой ▶ для запуска в один клик",
+      "version": "0.1.0",
+      "category": "productivity",
+      "tags": [
+        "commands",
+        "slash-commands",
+        "pane"
+      ]
+    },
+    {
+      "name": "next-steps",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/Zulut30/claude-mode.git",
+        "path": "ru/next-steps"
+      },
+      "description": "Над полем ввода после ответа: цель сессии, чего Claude ждёт от вас, и 2–3 следующих запроса кнопками; 1–3 или клик вставляет черновик",
+      "version": "0.3.0",
+      "category": "productivity",
+      "tags": [
+        "suggestions",
+        "prompts",
+        "band"
+      ]
+    },
+    {
+      "name": "command-guard",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/Zulut30/claude-mode.git",
+        "path": "ru/command-guard"
+      },
+      "description": "Страховка: спрашивает перед опасными командами (rm -r, git push --force, git reset --hard, git clean -f, git branch -D…) и показывает, что пропадёт",
+      "version": "0.1.0",
+      "category": "security",
+      "tags": [
+        "safety",
+        "git",
+        "bash",
+        "confirmation"
+      ]
+    },
+    {
+      "name": "mod-switch",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/Zulut30/claude-mode.git",
+        "path": "ru/mod-switch"
+      },
+      "description": "Панель «Моды»: включить или выключить «Дальше», страховку, колонки полосы над вводом и место дорожной карты — без команд",
+      "version": "0.1.0",
+      "category": "settings",
+      "tags": [
+        "settings",
+        "toggles",
+        "pane"
+      ]
+    }
+  ]
+}

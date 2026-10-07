@@ -1,0 +1,11 @@
+{
+  "name": "command-guard",
+  "version": "0.1.0",
+  "description": "Safety net for dangerous commands: before rm -r, git push --force, reset --hard and the like, shows what would be lost and asks Run or Cancel",
+  "author": {
+    "name": "Zulut30",
+    "url": "https://github.com/Zulut30"
+  },
+  "homepage": "https://github.com/Zulut30/claude-mode",
+  "types": "./types/index.d.ts"
+}

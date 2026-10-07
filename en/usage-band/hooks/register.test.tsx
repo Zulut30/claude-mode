@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { SessionUsage } from 'claude-code'
 
-import { formatCacheLeft, formatLeft, formatTokens, plural } from './register'
+import { columnOf, formatCacheLeft, formatLeft, formatTokens, plural } from './register'
 import { formatCount, ttlOf } from './speed'
 
 const NOW = Date.parse('2026-10-06T12:00:00Z')
@@ -82,6 +82,67 @@ test('band: context, memory and limits on terminal and desktop', async ($, on) =
     const bars =
       surface === 'desktop' ? await ui.findAll({ type: 'Svg' }) : await ui.findAll({ type: 'Text', text: /━/ })
     expect(bars).toHaveLength(3)
+    await ui.unmount()
+  }
+})
+
+const RUN = { origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
+
+test('/band: hidden columns — from the store at start, hide and show by id or name', async ($, on) => {
+  mock.clock(on, { now: NOW })
+  const store = new Map<string, unknown>([['hidden', ['speed', 'not a column']]])
+  on('store.get', ($, e) => ({ value: store.get(e.key) }))
+  on('store.set', ($, e) => {
+    store.set(e.key, e.value)
+
+    return { value: undefined }
+  })
+  on('session.usage', () => ({ value: USAGE }))
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+    const { Text } = $.ui.resolve(e)
+
+    return <Text>neighbour mod</Text>
+  })
+  const registered: string[] = []
+  on('command.register', ($, e) => {
+    registered.push(e.name)
+
+    return { value: { command: e.name } }
+  })
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  expect(registered).toEqual(['band'])
+
+  expect(columnOf('CACHE')).toBe('cache')
+  expect(columnOf('Limits')).toBe('limits')
+  expect(columnOf('lim')).toBeUndefined()
+
+  // What was saved is read at start: Speed is hidden, junk dropped.
+  expect((await $.command.run({ command: 'band', args: '', ...RUN })).text).toMatch(/hidden — Speed\./)
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'usage-band', surface, ...BAND })
+    expect(await ui.find({ type: 'Text', text: /^SPEED$/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /^CACHE$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^5 HOURS$/ })).toBeDefined()
+    await ui.unmount()
+  }
+
+  expect((await $.command.run({ command: 'band', args: 'hide Cache', ...RUN })).text).toBe('The Cache column is hidden. Bring it back: /band show cache')
+  expect((await $.command.run({ command: 'band', args: 'hide limits', ...RUN })).text).toMatch(/^The Limits column is hidden/)
+  expect((await $.command.run({ command: 'band', args: 'show speed', ...RUN })).text).toBe('The Speed column is back on the band.')
+  expect((await $.command.run({ command: 'band', args: 'hide something', ...RUN })).text).toMatch(/^No such column/)
+  expect(store.get('hidden')).toEqual(['cache', 'limits'])
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'usage-band', surface, ...BAND })
+    expect(await ui.find({ type: 'Text', text: /^CACHE$/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /^5 HOURS$/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /^WEEK$/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /^SPEED$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^CONTEXT$/ })).toBeDefined()
+    // Three columns fit in one row — a third of the width each.
+    expect((await ui.find({ key: 'context' }))?.props.width).toBe('33%')
     await ui.unmount()
   }
 })

@@ -22,8 +22,12 @@ export type PromptCache = {
   ttl?: CacheTtl
 }
 
+/** A band column: `limits` is every subscription-limit column at once (5 hours, week). */
+export type BandColumn = 'context' | 'memory' | 'limits' | 'speed' | 'cache'
+
 declare module 'claude-code' {
   interface PluginState {
-    'usage-band': { speed: Speed | null; cache: PromptCache | null }
+    /** `hidden` — the columns `/band hide` took off the band; kept across sessions. */
+    'usage-band': { speed: Speed | null; cache: PromptCache | null; hidden: BandColumn[] }
   }
 }

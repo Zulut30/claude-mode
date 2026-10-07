@@ -1,4 +1,5 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
+import type { TestBody } from 'claude-code/testing'
 
 import {
   parseBranches,
@@ -205,6 +206,80 @@ test('папка сессии не git, а проект лежит в подпа
   expect(dirs[0]).toBeUndefined()
   expect(dirs.slice(1).every(dir => dir === 'site')).toBe(true)
 })
+
+const sleep = (ms: number) =>
+  new Promise<void>(resolve => (globalThis as unknown as { setTimeout: (fn: () => void, ms: number) => void }).setTimeout(resolve, ms))
+
+/**
+ * ⇣ нажата, пока идёт фоновое чтение (↻). `readMs` — сколько оно идёт, `fetchMs` — сколько идёт
+ * git fetch; время двигает тест. До fetch у feature/login отставания нет, после — ↓5.
+ */
+const fetchDuringRefresh = (readMs: number, fetchMs: number): TestBody => async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  const log: string[] = []
+  let isFetched = false
+  let isHeld = false
+  on('process.run', async (_, e) => {
+    const command = e.argv.join(' ')
+    if (command.startsWith('git fetch')) {
+      log.push('fetch')
+      await clock.sleep(fetchMs)
+      isFetched = true
+
+      return ok('')
+    }
+    if (command.startsWith('git for-each-ref') && command.endsWith('refs/heads')) {
+      // Что видит чтение, решается в его начале.
+      const heads = isFetched ? HEADS : HEADS.replace('behind 5', '')
+      log.push(isFetched ? 'read:after' : 'read:before')
+      if (isHeld) {
+        await clock.sleep(readMs)
+      }
+
+      return ok(heads)
+    }
+    if (command.startsWith('gh pr list')) {
+      log.push('gh')
+
+      return ok(PRS)
+    }
+
+    return ok(GIT[command] ?? '')
+  })
+
+  await $.command.run({ command: 'branches', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
+  const ui = await $.ui.mount({ plugin: 'git-branches', surface: 'desktop', ...PANE })
+  expect(await ui.find({ type: 'Text', text: /^↓5$/ })).toBeUndefined()
+
+  isHeld = true
+  await ui.press({ key: 'refresh' })
+  await ui.press({ key: 'fetch' })
+  isHeld = false
+
+  // Индикатор на каждом шаге, пока чтение и fetch вместе не закончились.
+  const isLoadingSeen: boolean[] = []
+  for (let at = 500; at < readMs + fetchMs; at += 500) {
+    await clock.advance(500)
+    await sleep(10)
+    isLoadingSeen.push((await ui.find({ type: 'Text', text: /^обновляю…$/ })) !== undefined)
+  }
+  await clock.advance(500)
+  await sleep(10)
+
+  // Последний снимок прочитан после fetch, и PR перечитаны после него.
+  expect(log.filter(entry => entry.startsWith('read:')).at(-1)).toBe('read:after')
+  expect(log.lastIndexOf('gh')).toBeGreaterThan(log.indexOf('fetch'))
+  expect(await ui.find({ type: 'Text', text: /^↓5$/ })).toBeDefined()
+  // Пока шло хоть что-то — «обновляю…», даже когда одно из двух уже закончилось; потом — нет.
+  expect(isLoadingSeen.every(Boolean)).toBe(true)
+  expect(await ui.find({ type: 'Text', text: /^обновлено только что$/ })).toBeDefined()
+  await ui.unmount()
+}
+
+test('⇣ во время долгого фонового чтения: снимок — после fetch, а не начатый до него', fetchDuringRefresh(2000, 500))
+
+test('⇣ во время короткого фонового чтения: «обновляю…» горит до конца fetch', fetchDuringRefresh(500, 2000))
 
 test('длинный список: первые 6 веток и кнопка «Ещё N»', async ($, on) => {
   mock.clock(on, { now: NOW })

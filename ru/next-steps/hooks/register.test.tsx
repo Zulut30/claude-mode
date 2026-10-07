@@ -10,7 +10,12 @@ const MODEL_JSON = [
   JSON.stringify({
     goal: 'Страница входа с проверкой пароля.',
     waiting: 'подтвердить удаление token-speed',
-    steps: ['Запусти тесты логина ещё раз', '«Добавь ту же проверку в signup.ts»', 'Открой черновой PR.', 'Четвёртый лишний'],
+    steps: [
+      { label: 'Повторить тесты логина', prompt: 'Запусти тесты логина ещё раз' },
+      { label: 'Проверка в signup', prompt: '«Добавь ту же проверку в signup.ts»' },
+      { prompt: 'Открой черновой PR.' },
+      { label: 'Лишний', prompt: 'Четвёртый лишний' },
+    ],
   }),
   '```',
 ].join('\n')
@@ -39,23 +44,37 @@ describe('разбор и раскладка', () => {
     expect(parseSteps('Вот варианты:\nЗапусти линтер')).toEqual(['Запусти линтер'])
   })
 
-  test('JSON модели: цель и «ждёт вас» очищены, подсказки как построчно; не JSON — только подсказки', () => {
+  test('JSON модели: цель и «ждёт вас» очищены; у подсказки короткая подпись и полный запрос', () => {
     expect(parseReply(MODEL_JSON)).toEqual({
       goal: 'Страница входа с проверкой пароля',
       waiting: 'подтвердить удаление token-speed',
-      items: ['Запусти тесты логина ещё раз', 'Добавь ту же проверку в signup.ts', 'Открой черновой PR'],
+      items: [
+        { label: 'Повторить тесты логина', prompt: 'Запусти тесты логина ещё раз' },
+        { label: 'Проверка в signup', prompt: 'Добавь ту же проверку в signup.ts' },
+        // Без подписи — подпись из начала запроса.
+        { label: 'Открой черновой PR', prompt: 'Открой черновой PR' },
+      ],
     })
     expect(parseReply('{"goal": "", "waiting": "", "steps": []}')).toEqual({ items: [] })
-    expect(parseReply(MODEL_TEXT)).toEqual({ items: ['Запусти тесты логина ещё раз', 'Добавь ту же проверку в signup.ts', 'Открой черновой PR'] })
+    // Подсказки строками (старый вид ответа) и вовсе не JSON — тоже читаются.
+    expect(parseReply('{"steps": ["Добавь ту же проверку в signup.ts"]}').items).toEqual([
+      { label: 'Добавь ту же проверку в…', prompt: 'Добавь ту же проверку в signup.ts' },
+    ])
+    expect(parseReply(MODEL_TEXT).items.map(step => step.prompt)).toEqual([
+      'Запусти тесты логина ещё раз',
+      'Добавь ту же проверку в signup.ts',
+      'Открой черновой PR',
+    ])
     expect(clip('«Очень длинная цель, которая никак не помещается»', 20)).toBe('Очень длинная цель…')
     expect(clip('Страница входа', 20)).toBe('Страница входа')
   })
 
-  test('место на подсказку: поровну в одну строку; тесно — перенос с полной длиной, но не длиннее 48', () => {
-    expect(chipRoom(3, 160)).toBe(41)
-    expect(chipRoom(3, 80)).toBe(48)
-    expect(chipRoom(3, 30)).toBe(18)
-    expect(chipRoom(2, 200)).toBe(48)
+  test('подпись на кнопке: все три в одну строку с заголовком и ✕; на десктопе знаков в колонку почти вдвое больше', () => {
+    expect(chipRoom(3, 120, false)).toBe(27)
+    expect(chipRoom(3, 160, false)).toBe(28)
+    expect(chipRoom(3, 80, false)).toBe(13)
+    expect(chipRoom(3, 80, true)).toBe(28)
+    expect(chipRoom(3, 30, false)).toBe(10)
   })
 })
 
@@ -96,9 +115,12 @@ test('после ответа — подсказки над полем ввод�
     expect(await ui.find({ type: 'Text', text: 'соседний мод' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^ДАЛЬШЕ$/ })).toBeDefined()
     // Над подсказками — цель и чего ждёт ассистент.
-    expect(await ui.find({ type: 'Text', text: /^Страница входа с проверкой пароля$/ })).toBeDefined()
-    expect((await ui.find({ type: 'Text', text: /^ждёт вас: подтвердить удаление token-speed$/ }))?.props.color).toBe('#d29922')
-    expect((await ui.find({ key: 'step-1' }))?.text).toBe('1 · Запусти тесты логина ещё раз')
+    // Длинное обрезает сам рендер по настоящей ширине, а не мы заранее.
+    expect((await ui.find({ type: 'Text', text: /^Страница входа с проверкой пароля$/ }))?.props.wrap).toBe('truncate-end')
+    expect((await ui.find({ type: 'Text', text: /^ждёт вас$/ }))?.props.color).toBe('#d29922')
+    expect(await ui.find({ type: 'Text', text: /^подтвердить удаление token-speed$/ })).toBeDefined()
+    // На кнопке — короткая подпись, черновиком — полный запрос.
+    expect((await ui.find({ key: 'step-1' }))?.text).toBe('1 · Повторить тесты логина')
     // Подсказки — кнопки с рамкой (видно, что жмутся), «скрыть» — тихий ✕.
     expect((await ui.find({ key: 'step-1' }))?.props.plain).toBeUndefined()
     expect((await ui.find({ key: 'dismiss' }))?.text).toBe('✕')

@@ -1,6 +1,6 @@
 {
   "name": "next-steps",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "After Claude replies, 2–3 likely next prompts above the input: 1–3 or a click drafts one, 0 hides them",
   "author": {
     "name": "Zulut30",

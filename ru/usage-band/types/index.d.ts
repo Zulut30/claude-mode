@@ -22,8 +22,12 @@ export type PromptCache = {
   ttl?: CacheTtl
 }
 
+/** Колонка полосы: `limits` — все колонки лимитов подписки разом (5 часов, неделя). */
+export type BandColumn = 'context' | 'memory' | 'limits' | 'speed' | 'cache'
+
 declare module 'claude-code' {
   interface PluginState {
-    'usage-band': { speed: Speed | null; cache: PromptCache | null }
+    /** `hidden` — колонки, скрытые командой `/band hide`; хранится между сессиями. */
+    'usage-band': { speed: Speed | null; cache: PromptCache | null; hidden: BandColumn[] }
   }
 }

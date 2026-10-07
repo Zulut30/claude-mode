@@ -173,8 +173,10 @@ test('pane: stages, plan, a new task on a new prompt, "Earlier"', async ($, on) 
         : { result: 'ok', text: 'ok' },
   )
   on('prompt.submit', (_, e) => ({ text: e.text }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
 
   await $.prompt.submit(PROMPT('build the login page'))
+  await $.turn.start({ text: 'build the login page', turnId: 't1' })
   await call({ tool: 'Read', file_path: 'C:/p/src/app.ts' })
   await call({
     tool: 'TodoWrite',
@@ -316,3 +318,109 @@ test('the roadmap moves under the chat and back; the neighbouring band stays', a
   const reply = await $.command.run({ command: 'roadmap', args: 'band', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
   expect(reply.text).toBe('The roadmap is now under the chat, above the prompt.')
 })
+
+const sleep = (ms: number) =>
+  new Promise<void>(resolve => (globalThis as unknown as { setTimeout: (fn: () => void, ms: number) => void }).setTimeout(resolve, ms))
+
+const TURN_DONE = (agentId?: string) =>
+  ({ answer: 'ok', durationMs: 1, isAborted: false, turnId: agentId ? 'sub-1' : 't1', reason: 'answer', ...(agentId ? { agentId } : {}) }) as const
+
+test('"Claude is working" starts with a main-thread turn; a subagent turn ending leaves the roadmap alone', async ($, on) => {
+  mock.clock(on, { now: 0 })
+  const call = $.tool.call as unknown as (args: { tool: string; [key: string]: unknown }) => Promise<unknown>
+  on('tool.call', () => ({ result: 'ok', text: 'ok' }))
+  on('prompt.submit', (_, e) => ({ text: e.text }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+
+  /** The status line and whether "Implementation" is running, from a fresh drawing of the pane. */
+  const look = async () => {
+    const ui = await $.ui.mount({ plugin: 'roadmap', surface: 'terminal', ...PANE })
+    const status = (await ui.find({ type: 'Text', text: /^(Claude is working|Done · waiting for you|Something failed)/ }))?.text
+    const isWorkActive = (await ui.find({ type: 'Text', text: /^Implementation$/ }))?.props.bold === true
+    await ui.unmount()
+
+    return { status, isWorkActive }
+  }
+
+  await $.prompt.submit(PROMPT('build the login page'))
+  await call({ tool: 'Read', file_path: 'C:/p/a.ts' })
+  // The prompt has not started a turn yet: "working" is off.
+  expect((await look()).status).toMatch(/^Done · waiting for you/)
+
+  await $.turn.start({ text: 'build the login page', turnId: 't1' })
+  await call({ tool: 'Edit', file_path: 'C:/p/a.ts', old_string: 'a', new_string: 'b' })
+  expect(await look()).toEqual({ status: expect.stringMatching(/^Claude is working( · |$)/), isWorkActive: true })
+
+  // A subagent finished its turn while the main one goes on: the stage stays open, Claude is working.
+  await $.turn.complete(TURN_DONE('agent-1'))
+  expect(await look()).toEqual({ status: expect.stringMatching(/^Claude is working( · |$)/), isWorkActive: true })
+
+  await $.turn.complete(TURN_DONE())
+  expect(await look()).toEqual({ status: expect.stringMatching(/^Done · waiting for you/), isWorkActive: false })
+})
+
+test(
+  'the task title is the next-steps session goal when there is one; "Earlier" keeps prompt titles',
+  {
+    plugins: [
+      {
+        name: 'next-steps',
+        register(on) {
+          on('command.run', { command: 'set-goal' }, async ($, e) => {
+            await $.state.set({ plugin: 'next-steps', key: 'goal' } as const, e.args)
+
+            return { text: 'ok' }
+          })
+        },
+      },
+    ],
+  },
+  async ($, on) => {
+    mock.clock(on, { now: 0 })
+    const call = $.tool.call as unknown as (args: { tool: string; [key: string]: unknown }) => Promise<unknown>
+    on('tool.call', () => ({ result: 'ok', text: 'ok' }))
+    on('prompt.submit', (_, e) => ({ text: e.text }))
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    on('ui.close', () => ({ value: undefined }))
+    on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+      const { Box } = $.ui.resolve(e)
+
+      return <Box />
+    })
+    const setGoal = (goal: string) =>
+      $.command.run({ command: 'set-goal', args: goal, origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
+
+    await $.prompt.submit(PROMPT('build the login page'))
+    await call({ tool: 'Read', file_path: 'C:/p/a.ts' })
+
+    const pane = await $.ui.mount({ plugin: 'roadmap', surface: 'desktop', ...PANE })
+    expect(await pane.find({ type: 'Text', text: /^build the login page$/ })).toBeDefined()
+
+    // A goal appears: the open pane redraws by itself.
+    await setGoal('Mods for Claude Code')
+    await sleep(20)
+    expect(await pane.find({ type: 'Text', text: /^Mods for Claude Code$/ })).toBeDefined()
+    expect(await pane.find({ type: 'Text', text: /^build the login page$/ })).toBeUndefined()
+
+    // "Earlier" keeps the title from the prompt, not the goal.
+    await $.prompt.submit(PROMPT('now add a dark theme'))
+    await sleep(20)
+    await pane.press({ key: 'toggle-past' })
+    expect(await pane.find({ type: 'Text', text: /^build the login page$/ })).toBeDefined()
+    expect(await pane.findAll({ type: 'Text', text: /^Mods for Claude Code$/ })).toHaveLength(1)
+
+    // The band under the chat shows the goal too.
+    await pane.press({ key: 'to-band' })
+    await pane.unmount()
+    const band = await $.ui.mount({ plugin: 'roadmap', surface: 'terminal', ...BAND })
+    expect(await band.find({ type: 'Text', text: /^Mods for Claude Code$/ })).toBeDefined()
+    await band.unmount()
+
+    // An empty goal: back to the title from the prompt.
+    await setGoal('')
+    const view = await $.ui.mount({ plugin: 'roadmap', surface: 'terminal', ...BAND })
+    expect(await view.find({ type: 'Text', text: /^now add a dark theme$/ })).toBeDefined()
+    await view.unmount()
+  },
+)

@@ -6,13 +6,14 @@ Mods for **Claude Code**: the Code tab of the desktop app and the terminal. Each
 
 | | Mod | What it gives you | Where | Command | Network |
 | --- | --- | --- | --- | --- | --- |
-| 📊 | [**usage-band**](en/usage-band) | Context fill, memory files, subscription limits (5 hours and week), response speed and a prompt-cache timer | Band above the prompt | — | no |
+| 📊 | [**usage-band**](en/usage-band) | Context fill, memory files, subscription limits (5 hours and week), response speed and a prompt-cache timer | Band above the prompt | `/band` | no |
 | 🗺️ | [**roadmap**](en/roadmap) | Stages of the current task: context → work → checks → tests → push → deploy, plus Claude's plan | “Roadmap” pane or a band under the chat | `/roadmap` | no |
 | 🌿 | [**git-branches**](en/git-branches) | Branches, sync with the remote, GitHub pull requests and commits, GitLens-style | “Branches” pane | `/branches` | `gh`, `git fetch` |
 | 🧭 | [**context-inspector**](en/context-inspector) | What fills the context window and what you can free | “Context” pane | `/inspector` | no |
 | 🎛️ | [**command-deck**](en/command-deck) | The main slash commands with a one-line why and one-click run | “Commands” pane | `/deck` | no |
 | ➡️ | [**next-steps**](en/next-steps) | The session goal, what Claude is waiting on from you, and 2–3 next prompts as buttons; a click drafts one | Line above the prompt | `/next` | Haiku via Claude Code |
-| ⚡ | [**token-speed**](en/token-speed) | *Superseded by usage-band's SPEED column — don't install both* | Status line | — | no |
+| 🛡️ | [**command-guard**](en/command-guard) | Asks before destructive commands and shows what would be lost | A confirmation dialog | `/guard` | no |
+| 🎚️ | [**mod-switch**](en/mod-switch) | Turn next-steps, the command guard, the band's columns and the roadmap's placement on or off — no commands needed | “Mods” pane | `/mods` | no |
 
 Every mod comes in English ([`en/`](en)) and Russian ([`ru/`](ru)). Pick one language per mod: both versions share the same name.
 
@@ -86,13 +87,72 @@ Context 42%                                           ↻
 **next-steps** — above the prompt after a reply:
 
 ```
-◆ Login page with password checks     ⏳ waiting on you: confirm deleting token-speed
-NEXT [ 1 · Yes, delete the token-speed folder ] [ 2 · Rerun the login tests ] [ 3 · Open a draft PR ] ✕
+◆ Mods for Claude Code      waiting on you  pick what to do next
+NEXT  [1 · Check the look]  [2 · One-step install]  [3 · Command guard]    ✕
+```
+
+**command-guard** — before a destructive command:
+
+```
+Command guard
+Claude wants to run: git push --force
+2 commits on the server will be lost: a1b2c3d fix: header, f0f0f0f init
+[ Run ]  [ Cancel ]
 ```
 
 ## Installation
 
 Requires **Claude Code 2.1.288** or newer. The mods use the function-hooks API, which is in early access and may change between versions.
+
+The repository is a plugin marketplace: a catalog Claude Code installs mods from. Add the catalog once, then install the mods you want by name. English mods are in the `claude-mode` catalog, Russian ones in `claude-mode-ru`.
+
+**In Claude Code in a terminal**, type in the session:
+
+```
+/plugin marketplace add Zulut30/claude-mode
+/plugin install usage-band@claude-mode
+```
+
+`/plugin install` opens the mod's card: choose **Install for you**. Repeat it for each mod you want.
+
+**From your shell** (Terminal, PowerShell) — the same without opening a session. This is also the way for the **desktop app**: it has no `/plugin` command and reads the same settings as the terminal.
+
+```bash
+claude plugin marketplace add Zulut30/claude-mode
+claude plugin install usage-band@claude-mode
+claude plugin install roadmap@claude-mode
+claude plugin install git-branches@claude-mode
+claude plugin install context-inspector@claude-mode
+claude plugin install command-deck@claude-mode
+claude plugin install next-steps@claude-mode
+claude plugin install command-guard@claude-mode
+claude plugin install mod-switch@claude-mode
+```
+
+Keep the lines for the mods you want, then open a new session (or run `/reload-plugins` in an open one). In the desktop app, once the catalog is added, mods can also be installed from **+ → Plugins → Add plugin**.
+
+**Russian versions** are in a separate catalog. Pick one language per mod: `usage-band@claude-mode` and `usage-band@claude-mode-ru` are the same mod.
+
+```bash
+claude plugin marketplace add https://raw.githubusercontent.com/Zulut30/claude-mode/main/ru/.claude-plugin/marketplace.json
+claude plugin install usage-band@claude-mode-ru
+```
+
+**Update.** Auto-update is off by default for third-party catalogs. To turn it on, in Claude Code in a terminal: `/plugin` → **Marketplaces** → `claude-mode` → **Enable auto-update**. By hand:
+
+```bash
+claude plugin marketplace update claude-mode
+claude plugin update usage-band@claude-mode
+```
+
+The new version loads in the next session.
+
+**Remove** one mod: `claude plugin uninstall usage-band@claude-mode` (in the desktop app: **+ → Plugins → Manage plugins**). Remove the catalog together with all its mods: `claude plugin marketplace remove claude-mode`.
+
+<details>
+<summary><b>Manually: from a clone of the repository</b></summary>
+
+For trying changes before they're published, or without the `claude` command. Don't combine it with the catalog: a folder from `CLAUDE_CODE_PLUGIN_DIRS` silently replaces the installed mod of the same name.
 
 **1. Clone the repository** into a permanent folder:
 
@@ -107,7 +167,7 @@ git clone https://github.com/Zulut30/claude-mode.git ~/claude-mode
 ```json
 {
   "env": {
-    "CLAUDE_CODE_PLUGIN_DIRS": "/Users/you/claude-mode/en/usage-band:/Users/you/claude-mode/en/roadmap:/Users/you/claude-mode/en/git-branches:/Users/you/claude-mode/en/context-inspector:/Users/you/claude-mode/en/command-deck:/Users/you/claude-mode/en/next-steps"
+    "CLAUDE_CODE_PLUGIN_DIRS": "/Users/you/claude-mode/en/usage-band:/Users/you/claude-mode/en/roadmap:/Users/you/claude-mode/en/git-branches:/Users/you/claude-mode/en/context-inspector:/Users/you/claude-mode/en/command-deck:/Users/you/claude-mode/en/next-steps:/Users/you/claude-mode/en/command-guard:/Users/you/claude-mode/en/mod-switch"
   }
 }
 ```
@@ -115,17 +175,20 @@ git clone https://github.com/Zulut30/claude-mode.git ~/claude-mode
 *Terminal only, for one run:*
 
 ```bash
-claude --plugin-dir ~/claude-mode/en/usage-band --plugin-dir ~/claude-mode/en/roadmap --plugin-dir ~/claude-mode/en/git-branches --plugin-dir ~/claude-mode/en/context-inspector --plugin-dir ~/claude-mode/en/command-deck --plugin-dir ~/claude-mode/en/next-steps
+claude --plugin-dir ~/claude-mode/en/usage-band --plugin-dir ~/claude-mode/en/roadmap --plugin-dir ~/claude-mode/en/git-branches --plugin-dir ~/claude-mode/en/context-inspector --plugin-dir ~/claude-mode/en/command-deck --plugin-dir ~/claude-mode/en/next-steps --plugin-dir ~/claude-mode/en/command-guard --plugin-dir ~/claude-mode/en/mod-switch
 ```
 
 **3. Restart the app** or open a new session.
 
 **Update:** `git pull` in the repository folder, then a new session. **Remove:** take the paths out of `CLAUDE_CODE_PLUGIN_DIRS`.
 
+</details>
+
 ## Commands
 
 | Command | What it does |
 | --- | --- |
+| `/band hide <column>` · `/band show <column>` | Hide or show a band column: `context`, `memory`, `limits`, `speed`, `cache` |
 | `/roadmap` | Open the roadmap |
 | `/roadmap reset` | Start a new task; the current one moves to “Earlier” |
 | `/roadmap band` · `/roadmap pane` | Move the roadmap under the chat (above the prompt) or back into the pane |
@@ -134,8 +197,10 @@ claude --plugin-dir ~/claude-mode/en/usage-band --plugin-dir ~/claude-mode/en/ro
 | `/inspector` | Open the context inspector and recount |
 | `/deck` | Open the “Commands” pane |
 | `/next` · `/next off` · `/next on` | Next-step suggestions: status, turn off, turn on |
+| `/guard` · `/guard off` · `/guard on` | Command guard: status, turn off, turn on |
+| `/mods` | Open the “Mods” pane |
 
-The band above the prompt and the next-step suggestions work on their own. The roadmap, the context inspector and “Commands” open by themselves when a session starts; “Branches” does in a git project.
+The band above the prompt, the next-step suggestions and the command guard work on their own. The roadmap, the context inspector and “Commands” open by themselves when a session starts; “Branches” does in a git project.
 
 ## What the mods read and run
 
@@ -147,7 +212,8 @@ The band above the prompt and the next-step suggestions work on their own. The r
 | context-inspector | Claude Code's context breakdown (a local estimate, like `/context`) | — | no |
 | command-deck | Claude Code's command list | Commands — only when you press ▶ | no |
 | next-steps | The session's last messages | One Haiku call after a reply (off with `/next off`) | Through Claude Code: same account and API |
-| token-speed | The model's response stream | — | no |
+| command-guard | The command Claude is about to run | Read-only `git log`, `git status`, `git diff`, `git clean -n` and file stats for the preview | no |
+| mod-switch | Other mods' on/off state | The mods' own commands (`/next`, `/guard`, `/band`, `/roadmap`) — only when you press a switch | no |
 
 The mods write nothing to your files and send nothing to third parties. Their state lives in the Claude Code session; next-steps keeps only an “off” flag in Claude Code's plugin store.
 
@@ -155,7 +221,8 @@ The mods write nothing to your files and send nothing to third parties. Their st
 
 ## If something doesn't show
 
-- **No band, speed or cache.** Speed and cache appear after the model's first reply. Check that the paths in `CLAUDE_CODE_PLUGIN_DIRS` are absolute and point at the mod folder (the one holding `.claude-plugin`), then open a new session.
+- **No band, speed or cache.** Speed and cache appear after the model's first reply. Run `claude plugin list`: the mod should be listed as enabled. With the manual install, check that the paths in `CLAUDE_CODE_PLUGIN_DIRS` are absolute and point at the mod folder (the one holding `.claude-plugin`). Then open a new session.
+- **An old version loads after installing from the catalog.** Take the mod's path out of `CLAUDE_CODE_PLUGIN_DIRS`: a local folder replaces the installed mod.
 - **The branches pane says there's no git repository.** Neither the session folder nor its subfolders is a git project.
 - **No pull requests.** Install the [GitHub CLI](https://cli.github.com/) and run `gh auth login`.
 - **Digits 1–3 don't draft a suggestion.** Click it instead — clicks work everywhere.
@@ -164,13 +231,17 @@ The mods write nothing to your files and send nothing to third parties. Their st
 ## For developers
 
 ```
-en/  ru/                     two language versions of each mod
+.claude-plugin/marketplace.json      English catalog (claude-mode)
+ru/.claude-plugin/marketplace.json   Russian catalog (claude-mode-ru)
+en/  ru/                             two language versions of each mod
   <mod>/
-    .claude-plugin/plugin.json   manifest
-    hooks/hooks.json             which module to load
-    hooks/register.ts(x)         the mod's code
-    hooks/register.test.ts(x)    tests
-    types/index.d.ts             state types (if the mod keeps state)
+    .claude-plugin/plugin.json       manifest
+    hooks/hooks.json                 which module to load
+    hooks/register.ts(x)             the mod's code
+    hooks/register.test.ts(x)        tests
+    types/index.d.ts                 state types (if the mod keeps state)
 ```
 
-Tests and manifest check: `claude plugin test en/roadmap`, `claude plugin validate en/roadmap`.
+Tests and manifest check: `claude plugin test en/roadmap`, `claude plugin validate en/roadmap`. Catalog check: `claude plugin validate .` and `claude plugin validate ru`.
+
+Users get an update only when `version` in the mod's `plugin.json` changes: bump it with every release, together with the mod's entry in both catalogs.

@@ -1,0 +1,11 @@
+{
+  "name": "command-guard",
+  "version": "0.1.0",
+  "description": "Страховка от опасных команд: перед rm -r, git push --force, reset --hard и подобными Claude показывает, что пропадёт, и спрашивает «Выполнить» или «Отмена»",
+  "author": {
+    "name": "Zulut30",
+    "url": "https://github.com/Zulut30"
+  },
+  "homepage": "https://github.com/Zulut30/claude-mode",
+  "types": "./types/index.d.ts"
+}

@@ -1,0 +1,112 @@
+{
+  "name": "claude-mode",
+  "description": "Mods for Claude Code (English): a usage band above the prompt, roadmap, branches, context, commands and mods panes, next-step suggestions and a guard for destructive commands",
+  "owner": {
+    "name": "Zulut30"
+  },
+  "plugins": [
+    {
+      "name": "usage-band",
+      "source": "./en/usage-band",
+      "description": "Band above the prompt: context fill, memory files, subscription limits (5h and week), response speed and a prompt-cache timer",
+      "version": "0.4.0",
+      "category": "monitoring",
+      "tags": [
+        "context",
+        "limits",
+        "speed",
+        "cache",
+        "band"
+      ]
+    },
+    {
+      "name": "roadmap",
+      "source": "./en/roadmap",
+      "description": "Roadmap pane: task stages (context → implementation → checks → tests → push → deploy) marked automatically from Claude's actions, plus Claude's plan",
+      "version": "0.2.1",
+      "category": "productivity",
+      "tags": [
+        "tasks",
+        "plan",
+        "pane"
+      ]
+    },
+    {
+      "name": "git-branches",
+      "source": "./en/git-branches",
+      "description": "GitLens-style Branches pane: local and remote branches, ahead/behind, working-tree changes, GitHub pull requests and recent commits",
+      "version": "0.2.1",
+      "category": "git",
+      "tags": [
+        "git",
+        "github",
+        "branches",
+        "pull-requests",
+        "pane"
+      ]
+    },
+    {
+      "name": "context-inspector",
+      "source": "./en/context-inspector",
+      "description": "Context pane: what fills the context window, which MCP servers, skills and memory files use it, and what you can free up",
+      "version": "0.2.0",
+      "category": "monitoring",
+      "tags": [
+        "context",
+        "mcp",
+        "skills",
+        "memory",
+        "pane"
+      ]
+    },
+    {
+      "name": "command-deck",
+      "source": "./en/command-deck",
+      "description": "Commands pane: the main slash commands, each with a short note on why to use it and a ▶ button to run it in one click",
+      "version": "0.1.0",
+      "category": "productivity",
+      "tags": [
+        "commands",
+        "slash-commands",
+        "pane"
+      ]
+    },
+    {
+      "name": "next-steps",
+      "source": "./en/next-steps",
+      "description": "Above the prompt after a reply: the session goal, what Claude is waiting on from you, and 2–3 next prompts as buttons; 1–3 or a click drafts one",
+      "version": "0.3.0",
+      "category": "productivity",
+      "tags": [
+        "suggestions",
+        "prompts",
+        "band"
+      ]
+    },
+    {
+      "name": "command-guard",
+      "source": "./en/command-guard",
+      "description": "Asks before destructive shell commands (rm -r, git push --force, git reset --hard, git clean -f, git branch -D…) and shows what would be lost",
+      "version": "0.1.0",
+      "category": "security",
+      "tags": [
+        "safety",
+        "git",
+        "bash",
+        "confirmation"
+      ]
+    },
+    {
+      "name": "mod-switch",
+      "source": "./en/mod-switch",
+      "description": "“Mods” pane: turn next-steps, the command guard, the band's columns and the roadmap's placement on or off — no commands needed",
+      "version": "0.1.0",
+      "category": "settings",
+      "tags": [
+        "settings",
+        "toggles",
+        "pane"
+      ]
+    }
+  ]
+}

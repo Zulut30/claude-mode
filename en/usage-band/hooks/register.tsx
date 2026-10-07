@@ -1,12 +1,47 @@
-import { atom, read } from 'claude-code'
+import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren, SessionRateLimit } from 'claude-code'
 
-import type { PromptCache, Speed } from '../types'
+import type { BandColumn, PromptCache, Speed } from '../types'
 import { formatCount, formatRate, TTL_MS, watchSpeed } from './speed'
 
 /** The same state speed.ts writes: the engine wants whatever a file reads declared in that file. */
 const speed = atom({ plugin: 'usage-band', key: 'speed' } as const, null as Speed | null)
 const cache = atom({ plugin: 'usage-band', key: 'cache' } as const, null as PromptCache | null)
+
+/** Hidden columns: `/band` writes them, the band reads them; kept across sessions in `$.store`. */
+const hidden = atom({ plugin: 'usage-band', key: 'hidden' } as const, [] as BandColumn[])
+const HIDDEN_KEY = 'hidden'
+
+/** The columns in band order: the label for replies and the names `/band` knows them by. */
+export const COLUMNS: readonly { id: BandColumn; label: string; names: readonly string[] }[] = [
+  { id: 'context', label: 'Context', names: [] },
+  { id: 'memory', label: 'Memory', names: [] },
+  { id: 'limits', label: 'Limits', names: ['limit', 'subscription'] },
+  { id: 'speed', label: 'Speed', names: [] },
+  { id: 'cache', label: 'Cache', names: [] },
+]
+
+/** A column by the word in the command: `cache` or `Cache`, case doesn't matter. */
+export const columnOf = (word: string): BandColumn | undefined => {
+  const name = word.trim().toLowerCase()
+
+  return COLUMNS.find(one => one.id === name || one.names.includes(name))?.id
+}
+
+const labelOf = (id: BandColumn) => COLUMNS.find(one => one.id === id)?.label ?? id
+
+const COLUMN_NAMES = 'context, memory, limits, speed, cache'
+
+/** The reply to a bare `/band`: what's shown, what's hidden and how to switch. */
+export const bandStatus = (off: readonly BandColumn[]) => {
+  const list = (ids: BandColumn[]) => (ids.length === 0 ? 'none' : ids.map(labelOf).join(', '))
+  const ids = COLUMNS.map(one => one.id)
+
+  return (
+    `Band above the prompt: shown — ${list(ids.filter(id => !off.includes(id)))}; hidden — ${list(ids.filter(id => off.includes(id)))}. ` +
+    `Hide: /band hide <column>, bring back: /band show <column> (${COLUMN_NAMES}).`
+  )
+}
 
 /** How long the cache has left: "4 min", "1h". */
 export const formatCacheLeft = (ms: number) => {
@@ -100,11 +135,48 @@ export const register: Register = on => {
   // The model's response speed: the reply stream → the SPEED column.
   watchSpeed(on)
 
-  // Once-a-minute tick: the countdown to limit resets.
+  // Once-a-minute tick: the countdown to limit resets. And the `/band` command with the hidden columns.
   on('session.start', async ($, e, next) => {
     $.clock.every(60_000, () => $.ui.invalidate('ui.render'))
+    // The name is taken by another plugin — no command then, but the rest of the session start must go on.
+    await $.command
+      .register({
+        name: 'band',
+        description: 'Columns of the band above the prompt: `/band` shows which are on, `/band hide cache` hides one, `/band show cache` brings it back',
+        argumentHint: '[hide|show <column>]',
+        immediate: true,
+      })
+      .catch(() => undefined)
+    const saved = await $.store.get(HIDDEN_KEY).catch(() => undefined)
+    const ids = Array.isArray(saved) ? COLUMNS.map(one => one.id).filter(id => saved.includes(id)) : []
+    await update($, hidden, () => ids)
 
     return next(e)
+  })
+
+  on('command.run', { command: 'band' }, async ($, e) => {
+    const [verb = '', ...words] = e.args.trim().toLowerCase().split(/\s+/)
+    if (verb === 'hide' || verb === 'show') {
+      const id = columnOf(words.join(' '))
+      if (!id) {
+        return { text: `No such column: "${words.join(' ')}". Columns: ${COLUMN_NAMES}.` }
+      }
+      const off = await update($, hidden, ids => {
+        const rest = ids.filter(one => one !== id)
+
+        return verb === 'hide' ? [...rest, id] : rest
+      })
+      await $.store.set(HIDDEN_KEY, off).catch(() => undefined)
+
+      return {
+        text: verb === 'hide' ? `The ${labelOf(id)} column is hidden. Bring it back: /band show ${id}` : `The ${labelOf(id)} column is back on the band.`,
+      }
+    }
+    if (verb !== '') {
+      return { text: `Didn't get "${e.args.trim()}". ${bandStatus(await read($, hidden))}` }
+    }
+
+    return { text: bandStatus(await read($, hidden)) }
   })
 
   /**
@@ -168,10 +240,19 @@ export const register: Register = on => {
 
     const pace = await read($, speed)
     const warm = await read($, cache)
+    const off = await read($, hidden)
+    const isShown = (id: BandColumn) => !off.includes(id)
 
     // Even columns, like stat cards: title on top, value below.
     // As many per row as fit (~20 cells per column); if not all fit, rows are split evenly, not 5 + 1.
-    const count = 4 + Math.max(1, rateLimits.length)
+    // Columns hidden by `/band hide` don't count; "limits" is as many columns as the subscription has limits.
+    const count = COLUMNS.reduce(
+      (sum, one) => sum + (isShown(one.id) ? (one.id === 'limits' ? Math.max(1, rateLimits.length) : 1) : 0),
+      0,
+    )
+    if (count === 0) {
+      return next(e)
+    }
     const fit = Math.max(2, Math.floor(e.props.bodyColumns / 20))
     const perRow = count <= fit ? count : Math.ceil(count / Math.ceil(count / fit))
     const width = `${Math.floor(100 / perRow)}%`
@@ -220,39 +301,45 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column">
         <Box key="usage" flexDirection="row" flexWrap="wrap" rowGap={1}>
-          {column('context', 'CONTEXT', [
-            percentText(context.percent),
-            bar('context-bar', context.percent, `Context: ${context.percent ?? 0}%`),
-            <Text dimColor>
-              {context.tokens === undefined
-                ? 'after the first reply'
-                : `${formatTokens(context.tokens)}/${formatTokens(context.window)}`}
-            </Text>,
-          ])}
-          {column(
-            'memory',
-            'MEMORY',
-            memoryFiles.length === 0
-              ? [<Text dimColor>none</Text>]
-              : [
-                  <Text>
-                    {memoryFiles.length} {plural(memoryFiles.length, 'file', 'files')}
-                  </Text>,
-                  <Text dimColor>~{formatTokens(memoryTokens)} tok.</Text>,
-                ],
-          )}
-          {rateLimits.length === 0
-            ? column('limits', 'SUBSCRIPTION', [<Text dimColor>after the first reply</Text>])
-            : rateLimits.map((limit: SessionRateLimit) => {
-                const left = formatLeft(limit.resetsAt, now)
+          {isShown('context')
+            ? column('context', 'CONTEXT', [
+                percentText(context.percent),
+                bar('context-bar', context.percent, `Context: ${context.percent ?? 0}%`),
+                <Text dimColor>
+                  {context.tokens === undefined
+                    ? 'after the first reply'
+                    : `${formatTokens(context.tokens)}/${formatTokens(context.window)}`}
+                </Text>,
+              ])
+            : null}
+          {isShown('memory')
+            ? column(
+                'memory',
+                'MEMORY',
+                memoryFiles.length === 0
+                  ? [<Text dimColor>none</Text>]
+                  : [
+                      <Text>
+                        {memoryFiles.length} {plural(memoryFiles.length, 'file', 'files')}
+                      </Text>,
+                      <Text dimColor>~{formatTokens(memoryTokens)} tok.</Text>,
+                    ],
+              )
+            : null}
+          {!isShown('limits')
+            ? null
+            : rateLimits.length === 0
+              ? column('limits', 'SUBSCRIPTION', [<Text dimColor>after the first reply</Text>])
+              : rateLimits.map((limit: SessionRateLimit) => {
+                  const left = formatLeft(limit.resetsAt, now)
 
-                return column(`limit-${limit.kind}`, LIMIT_LABELS[limit.kind] ?? limit.kind.toUpperCase(), [
-                  percentText(limit.percentUsed),
-                  bar(`limit-${limit.kind}-bar`, limit.percentUsed, `${limit.kind}: ${limit.percentUsed}%`),
-                  left ? <Text dimColor>↻ {left}</Text> : null,
-                ])
-              })}
-          {column(
+                  return column(`limit-${limit.kind}`, LIMIT_LABELS[limit.kind] ?? limit.kind.toUpperCase(), [
+                    percentText(limit.percentUsed),
+                    bar(`limit-${limit.kind}-bar`, limit.percentUsed, `${limit.kind}: ${limit.percentUsed}%`),
+                    left ? <Text dimColor>↻ {left}</Text> : null,
+                  ])
+                })}
+          {isShown('speed') ? column(
             'speed',
             'SPEED',
             pace === null
@@ -277,8 +364,8 @@ export const register: Register = on => {
                   ) : null,
                   <Text dimColor>{pace.isLive ? 'replying' : `${formatCount(pace.tokens)} tok`}</Text>,
                 ],
-          )}
-          {column('cache', 'CACHE', cacheValue())}
+          ) : null}
+          {isShown('cache') ? column('cache', 'CACHE', cacheValue()) : null}
         </Box>
         {others}
       </Box>

@@ -1,0 +1,11 @@
+{
+  "name": "mod-switch",
+  "version": "0.1.0",
+  "description": "Панель «Моды»: переключатели остальных модов — подсказки «Дальше», страховка команд, колонки полосы над вводом и место дорожной карты; каждый мод переключается своей же командой",
+  "author": {
+    "name": "Zulut30",
+    "url": "https://github.com/Zulut30"
+  },
+  "homepage": "https://github.com/Zulut30/claude-mode",
+  "types": "./types/index.d.ts"
+}

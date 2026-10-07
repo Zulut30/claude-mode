@@ -67,6 +67,12 @@ const isHistoryOpen = atom({ plugin: 'roadmap', key: 'isHistoryOpen' } as const,
 const isWorking = atom({ plugin: 'roadmap', key: 'isWorking' } as const, false)
 const placement = atom({ plugin: 'roadmap', key: 'placement' } as const, 'pane' as 'pane' | 'band')
 
+/** The session goal kept by the next-steps mod: read only; without that mod there is no value. */
+const NEXT_STEPS_GOAL = { plugin: 'next-steps', key: 'goal' } as const
+
+/** The next-steps goal; reading it while drawing subscribes to it: a new goal redraws the roadmap. */
+const readGoal = async ($: EngineInterface) => (await $.state.get(NEXT_STEPS_GOAL).catch(() => ({ value: undefined }))).value
+
 /** Short stage names for the band under the chat. */
 const SHORT_TITLES: Record<StageId, string> = {
   context: 'Context',
@@ -354,6 +360,13 @@ export const isContinuation = (text: string) => {
 }
 
 const hasActivity = (current: Roadmap) => STAGES.some(({ id }) => current.stages[id].status !== 'pending') || current.plan.length > 0
+
+/** The task title in the header and the band: the next-steps session goal when there is one, else from the prompt. */
+export const headTitle = (current: Roadmap, goal: unknown) => {
+  const text = typeof goal === 'string' ? goal.trim() : ''
+
+  return text && (current.task || hasActivity(current)) ? text : current.task
+}
 
 /** Task summary for "Earlier". */
 export const summarize = (current: Roadmap, found: Project, now: number): PastTask => {
@@ -673,8 +686,13 @@ export const register: Register = on => {
         await startNewTask($, taskTitle(text))
       }
     }
-    // Any prompt except a slash command starts a Claude turn.
-    if (text && !text.startsWith('/')) {
+
+    return next(e)
+  })
+
+  // "Claude is working" runs from the start of a main-thread turn to its end; subagent turns don't count.
+  on('turn.start', async ($, e, next) => {
+    if (!('agentId' in e && e.agentId)) {
       await update($, isWorking, () => true)
     }
 
@@ -729,6 +747,11 @@ export const register: Register = on => {
   })
 
   on('turn.complete', async ($, e, next) => {
+    // A subagent's turn ending is not Claude's turn ending: leave the stages and "working" alone.
+    if (e.agentId) {
+      return next(e)
+    }
+
     await update($, isWorking, () => false)
     const now = await $.clock.now()
     await edit($, current => closeTurn(current, now))
@@ -749,6 +772,7 @@ export const register: Register = on => {
     const showPast = await read($, isHistoryOpen)
     const working = await read($, isWorking)
     const status = taskStatus(current, found, working)
+    const title = headTitle(current, await readGoal($))
     const now = await $.clock.now()
 
     const stages = visibleStages(current, found)
@@ -818,8 +842,8 @@ export const register: Register = on => {
     const head = (
       <Box key="head" flexDirection="row" justifyContent="space-between" alignItems="flex-start" columnGap={1}>
         <Box key="head-text" flexDirection="column">
-          {current.task ? (
-            <Text bold>{short(current.task, headRoom)}</Text>
+          {title ? (
+            <Text bold>{short(title, headRoom)}</Text>
           ) : (
             <Text dimColor>{short('Appears with your next prompt', headRoom)}</Text>
           )}
@@ -979,6 +1003,7 @@ export const register: Register = on => {
     const Svg = e.surface !== 'terminal' && 'Svg' in elements ? elements.Svg : undefined
     const found = await read($, project)
     const status = taskStatus(current, found, await read($, isWorking))
+    const title = headTitle(current, await readGoal($))
     const now = await $.clock.now()
     const stages = visibleStages(current, found)
     const lastStarted = stages.reduce((at, { id }, index) => (current.stages[id].status === 'pending' ? at : index), -1)
@@ -1024,7 +1049,7 @@ export const register: Register = on => {
         <Box key="roadmap-band" flexDirection="row" alignItems="center" justifyContent="space-between" columnGap={2} marginBottom={1}>
           <Box key="roadmap-band-task" flexDirection="row" alignItems="center" columnGap={1}>
             {status ? icon(status.mark) : null}
-            <Text bold>{short(current.task || 'Task', room)}</Text>
+            <Text bold>{short(title || 'Task', room)}</Text>
           </Box>
           {chain === 'none' ? null : (
             <Box key="roadmap-band-steps" flexDirection="row" alignItems="center" columnGap={1}>

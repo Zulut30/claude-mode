@@ -164,8 +164,10 @@ test('панель: стадии, план, новая задача по нов�
         : { result: 'ok', text: 'ok' },
   )
   on('prompt.submit', (_, e) => ({ text: e.text }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
 
   await $.prompt.submit(PROMPT('сделай страницу входа'))
+  await $.turn.start({ text: 'сделай страницу входа', turnId: 't1' })
   await call({ tool: 'Read', file_path: 'C:/p/src/app.ts' })
   await call({
     tool: 'TodoWrite',
@@ -307,3 +309,109 @@ test('карта переносится под чат и обратно; сос�
   const reply = await $.command.run({ command: 'roadmap', args: 'band', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
   expect(reply.text).toBe('Дорожная карта теперь под чатом, над полем ввода.')
 })
+
+const sleep = (ms: number) =>
+  new Promise<void>(resolve => (globalThis as unknown as { setTimeout: (fn: () => void, ms: number) => void }).setTimeout(resolve, ms))
+
+const TURN_DONE = (agentId?: string) =>
+  ({ answer: 'ok', durationMs: 1, isAborted: false, turnId: agentId ? 'sub-1' : 't1', reason: 'answer', ...(agentId ? { agentId } : {}) }) as const
+
+test('«Claude работает» — с начала хода основного потока; конец хода субагента карту не трогает', async ($, on) => {
+  mock.clock(on, { now: 0 })
+  const call = $.tool.call as unknown as (args: { tool: string; [key: string]: unknown }) => Promise<unknown>
+  on('tool.call', () => ({ result: 'ok', text: 'ok' }))
+  on('prompt.submit', (_, e) => ({ text: e.text }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+
+  /** Строка статуса и то, идёт ли «Выполнение задачи», — с новой отрисовки панели. */
+  const look = async () => {
+    const ui = await $.ui.mount({ plugin: 'roadmap', surface: 'terminal', ...PANE })
+    const status = (await ui.find({ type: 'Text', text: /^(Claude работает|Готово · ждёт вас|Есть ошибка)/ }))?.text
+    const isWorkActive = (await ui.find({ type: 'Text', text: /^Выполнение задачи$/ }))?.props.bold === true
+    await ui.unmount()
+
+    return { status, isWorkActive }
+  }
+
+  await $.prompt.submit(PROMPT('сделай страницу входа'))
+  await call({ tool: 'Read', file_path: 'C:/p/a.ts' })
+  // Запрос ещё не начал ход — «работает» не горит.
+  expect((await look()).status).toMatch(/^Готово · ждёт вас/)
+
+  await $.turn.start({ text: 'сделай страницу входа', turnId: 't1' })
+  await call({ tool: 'Edit', file_path: 'C:/p/a.ts', old_string: 'a', new_string: 'b' })
+  expect(await look()).toEqual({ status: expect.stringMatching(/^Claude работает( · |$)/), isWorkActive: true })
+
+  // Субагент закончил свой ход — основной ещё идёт: этап открыт, Claude работает.
+  await $.turn.complete(TURN_DONE('agent-1'))
+  expect(await look()).toEqual({ status: expect.stringMatching(/^Claude работает( · |$)/), isWorkActive: true })
+
+  await $.turn.complete(TURN_DONE())
+  expect(await look()).toEqual({ status: expect.stringMatching(/^Готово · ждёт вас/), isWorkActive: false })
+})
+
+test(
+  'название задачи — цель сессии из «Дальше», если она есть; «Ранее» — по запросу',
+  {
+    plugins: [
+      {
+        name: 'next-steps',
+        register(on) {
+          on('command.run', { command: 'set-goal' }, async ($, e) => {
+            await $.state.set({ plugin: 'next-steps', key: 'goal' } as const, e.args)
+
+            return { text: 'ok' }
+          })
+        },
+      },
+    ],
+  },
+  async ($, on) => {
+    mock.clock(on, { now: 0 })
+    const call = $.tool.call as unknown as (args: { tool: string; [key: string]: unknown }) => Promise<unknown>
+    on('tool.call', () => ({ result: 'ok', text: 'ok' }))
+    on('prompt.submit', (_, e) => ({ text: e.text }))
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    on('ui.close', () => ({ value: undefined }))
+    on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+      const { Box } = $.ui.resolve(e)
+
+      return <Box />
+    })
+    const setGoal = (goal: string) =>
+      $.command.run({ command: 'set-goal', args: goal, origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
+
+    await $.prompt.submit(PROMPT('сделай страницу входа'))
+    await call({ tool: 'Read', file_path: 'C:/p/a.ts' })
+
+    const pane = await $.ui.mount({ plugin: 'roadmap', surface: 'desktop', ...PANE })
+    expect(await pane.find({ type: 'Text', text: /^сделай страницу входа$/ })).toBeDefined()
+
+    // Цель появилась — открытая панель перерисовывается сама.
+    await setGoal('Моды для Claude Code')
+    await sleep(20)
+    expect(await pane.find({ type: 'Text', text: /^Моды для Claude Code$/ })).toBeDefined()
+    expect(await pane.find({ type: 'Text', text: /^сделай страницу входа$/ })).toBeUndefined()
+
+    // В «Ранее» — название по запросу, а не цель.
+    await $.prompt.submit(PROMPT('теперь добавь тёмную тему'))
+    await sleep(20)
+    await pane.press({ key: 'toggle-past' })
+    expect(await pane.find({ type: 'Text', text: /^сделай страницу входа$/ })).toBeDefined()
+    expect(await pane.findAll({ type: 'Text', text: /^Моды для Claude Code$/ })).toHaveLength(1)
+
+    // Полоса под чатом — тоже с целью.
+    await pane.press({ key: 'to-band' })
+    await pane.unmount()
+    const band = await $.ui.mount({ plugin: 'roadmap', surface: 'terminal', ...BAND })
+    expect(await band.find({ type: 'Text', text: /^Моды для Claude Code$/ })).toBeDefined()
+    await band.unmount()
+
+    // Цель пустая — снова название по запросу.
+    await setGoal('')
+    const view = await $.ui.mount({ plugin: 'roadmap', surface: 'terminal', ...BAND })
+    expect(await view.find({ type: 'Text', text: /^теперь добавь тёмную тему$/ })).toBeDefined()
+    await view.unmount()
+  },
+)

@@ -59,5 +59,7 @@ declare module 'claude-code' {
       /** Where to show the roadmap: as a side pane or as a band under the chat, above the prompt. */
       placement: 'pane' | 'band'
     }
+    /** The next-steps mod: the roadmap only reads its session goal and uses it as the task title. */
+    'next-steps': { goal: string }
   }
 }

@@ -10,7 +10,12 @@ const MODEL_JSON = [
   JSON.stringify({
     goal: 'Login page with password checks.',
     waiting: 'confirm deleting token-speed',
-    steps: ['Rerun the login tests', '"Add the same check to signup.ts"', 'Open a draft PR.', 'A fourth one too many'],
+    steps: [
+      { label: 'Rerun login tests', prompt: 'Rerun the login tests' },
+      { label: 'Check in signup', prompt: '"Add the same check to signup.ts"' },
+      { prompt: 'Open a draft PR.' },
+      { label: 'Extra', prompt: 'A fourth one too many' },
+    ],
   }),
   '```',
 ].join('\n')
@@ -39,23 +44,37 @@ describe('parsing and layout', () => {
     expect(parseSteps('Here are some options:\nRun the linter')).toEqual(['Run the linter'])
   })
 
-  test('model JSON: goal and "waiting on you" cleaned, suggestions as line by line; not JSON — suggestions only', () => {
+  test('model JSON: goal and "waiting on you" cleaned; each suggestion has a short label and the full prompt', () => {
     expect(parseReply(MODEL_JSON)).toEqual({
       goal: 'Login page with password checks',
       waiting: 'confirm deleting token-speed',
-      items: ['Rerun the login tests', 'Add the same check to signup.ts', 'Open a draft PR'],
+      items: [
+        { label: 'Rerun login tests', prompt: 'Rerun the login tests' },
+        { label: 'Check in signup', prompt: 'Add the same check to signup.ts' },
+        // No label — the label comes from the start of the prompt.
+        { label: 'Open a draft PR', prompt: 'Open a draft PR' },
+      ],
     })
     expect(parseReply('{"goal": "", "waiting": "", "steps": []}')).toEqual({ items: [] })
-    expect(parseReply(MODEL_TEXT)).toEqual({ items: ['Rerun the login tests', 'Add the same check to signup.ts', 'Open a draft PR'] })
+    // Suggestions as strings (the old reply shape) and plain non-JSON text are read too.
+    expect(parseReply('{"steps": ["Add the same check to signup.ts"]}').items).toEqual([
+      { label: 'Add the same check to…', prompt: 'Add the same check to signup.ts' },
+    ])
+    expect(parseReply(MODEL_TEXT).items.map(step => step.prompt)).toEqual([
+      'Rerun the login tests',
+      'Add the same check to signup.ts',
+      'Open a draft PR',
+    ])
     expect(clip('"A very long goal, which never fits at all"', 20)).toBe('A very long goal…')
     expect(clip('Login page', 20)).toBe('Login page')
   })
 
-  test('room per suggestion: shared evenly on one line; when tight — wrap at full length, but no longer than 48', () => {
-    expect(chipRoom(3, 160)).toBe(41)
-    expect(chipRoom(3, 80)).toBe(48)
-    expect(chipRoom(3, 30)).toBe(18)
-    expect(chipRoom(2, 200)).toBe(48)
+  test('button label: all three on one line with the title and ✕; on desktop almost twice as many characters per column', () => {
+    expect(chipRoom(3, 120, false)).toBe(27)
+    expect(chipRoom(3, 160, false)).toBe(28)
+    expect(chipRoom(3, 80, false)).toBe(14)
+    expect(chipRoom(3, 80, true)).toBe(28)
+    expect(chipRoom(3, 30, false)).toBe(10)
   })
 })
 
@@ -96,9 +115,12 @@ test('after a reply — suggestions above the input; a click drafts one, 0 hides
     expect(await ui.find({ type: 'Text', text: /^neighbour mod$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^NEXT$/ })).toBeDefined()
     // Above the suggestions: the goal and what the assistant is waiting on.
-    expect(await ui.find({ type: 'Text', text: /^Login page with password checks$/ })).toBeDefined()
-    expect((await ui.find({ type: 'Text', text: /^waiting on you: confirm deleting token-speed$/ }))?.props.color).toBe('#d29922')
-    expect((await ui.find({ key: 'step-1' }))?.text).toBe('1 · Rerun the login tests')
+    // The renderer truncates long text to the real width, not us in advance.
+    expect((await ui.find({ type: 'Text', text: /^Login page with password checks$/ }))?.props.wrap).toBe('truncate-end')
+    expect((await ui.find({ type: 'Text', text: /^waiting on you$/ }))?.props.color).toBe('#d29922')
+    expect(await ui.find({ type: 'Text', text: /^confirm deleting token-speed$/ })).toBeDefined()
+    // The button shows a short label; the draft is the full prompt.
+    expect((await ui.find({ key: 'step-1' }))?.text).toBe('1 · Rerun login tests')
     // Suggestions are framed buttons (clearly clickable); "hide" is a quiet ✕.
     expect((await ui.find({ key: 'step-1' }))?.props.plain).toBeUndefined()
     expect((await ui.find({ key: 'dismiss' }))?.text).toBe('✕')

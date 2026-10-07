@@ -1,4 +1,5 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
+import type { TestBody } from 'claude-code/testing'
 
 import {
   parseBranches,
@@ -205,6 +206,80 @@ test('session folder is not git but the project is in a subfolder: the pane show
   expect(dirs[0]).toBeUndefined()
   expect(dirs.slice(1).every(dir => dir === 'site')).toBe(true)
 })
+
+const sleep = (ms: number) =>
+  new Promise<void>(resolve => (globalThis as unknown as { setTimeout: (fn: () => void, ms: number) => void }).setTimeout(resolve, ms))
+
+/**
+ * ⇣ pressed while a background read (↻) is running. `readMs` is how long that read takes, `fetchMs` how
+ * long git fetch takes; the test moves the time. Before the fetch feature/login is not behind, after it ↓5.
+ */
+const fetchDuringRefresh = (readMs: number, fetchMs: number): TestBody => async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  const log: string[] = []
+  let isFetched = false
+  let isHeld = false
+  on('process.run', async (_, e) => {
+    const command = e.argv.join(' ')
+    if (command.startsWith('git fetch')) {
+      log.push('fetch')
+      await clock.sleep(fetchMs)
+      isFetched = true
+
+      return ok('')
+    }
+    if (command.startsWith('git for-each-ref') && command.endsWith('refs/heads')) {
+      // What a read sees is decided when it starts.
+      const heads = isFetched ? HEADS : HEADS.replace('behind 5', '')
+      log.push(isFetched ? 'read:after' : 'read:before')
+      if (isHeld) {
+        await clock.sleep(readMs)
+      }
+
+      return ok(heads)
+    }
+    if (command.startsWith('gh pr list')) {
+      log.push('gh')
+
+      return ok(PRS)
+    }
+
+    return ok(GIT[command] ?? '')
+  })
+
+  await $.command.run({ command: 'branches', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
+  const ui = await $.ui.mount({ plugin: 'git-branches', surface: 'desktop', ...PANE })
+  expect(await ui.find({ type: 'Text', text: /^↓5$/ })).toBeUndefined()
+
+  isHeld = true
+  await ui.press({ key: 'refresh' })
+  await ui.press({ key: 'fetch' })
+  isHeld = false
+
+  // The indicator at every step until the read and the fetch have both finished.
+  const isLoadingSeen: boolean[] = []
+  for (let at = 500; at < readMs + fetchMs; at += 500) {
+    await clock.advance(500)
+    await sleep(10)
+    isLoadingSeen.push((await ui.find({ type: 'Text', text: /^updating…$/ })) !== undefined)
+  }
+  await clock.advance(500)
+  await sleep(10)
+
+  // The last snapshot was read after the fetch, and PRs were reloaded after it.
+  expect(log.filter(entry => entry.startsWith('read:')).at(-1)).toBe('read:after')
+  expect(log.lastIndexOf('gh')).toBeGreaterThan(log.indexOf('fetch'))
+  expect(await ui.find({ type: 'Text', text: /^↓5$/ })).toBeDefined()
+  // While anything ran: "updating…", even when one of the two had already finished; afterwards not.
+  expect(isLoadingSeen.every(Boolean)).toBe(true)
+  expect(await ui.find({ type: 'Text', text: /^updated just now$/ })).toBeDefined()
+  await ui.unmount()
+}
+
+test('⇣ during a long background read: the snapshot is from after the fetch, not one begun before it', fetchDuringRefresh(2000, 500))
+
+test('⇣ during a short background read: "updating…" stays on until the fetch ends', fetchDuringRefresh(500, 2000))
 
 test('long list: the first 6 branches and a "More N" button', async ($, on) => {
   mock.clock(on, { now: NOW })

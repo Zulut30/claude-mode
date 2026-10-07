@@ -1,12 +1,47 @@
-import { atom, read } from 'claude-code'
+import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren, SessionRateLimit } from 'claude-code'
 
-import type { PromptCache, Speed } from '../types'
+import type { BandColumn, PromptCache, Speed } from '../types'
 import { formatCount, formatRate, TTL_MS, watchSpeed } from './speed'
 
 /** То же состояние, что пишет speed.ts: движок требует объявлять читаемое в своём файле. */
 const speed = atom({ plugin: 'usage-band', key: 'speed' } as const, null as Speed | null)
 const cache = atom({ plugin: 'usage-band', key: 'cache' } as const, null as PromptCache | null)
+
+/** Скрытые колонки: пишет `/band`, читает полоса; между сессиями — в `$.store`. */
+const hidden = atom({ plugin: 'usage-band', key: 'hidden' } as const, [] as BandColumn[])
+const HIDDEN_KEY = 'hidden'
+
+/** Колонки в порядке полосы: подпись для ответов и имена, по которым `/band` их узнаёт. */
+export const COLUMNS: readonly { id: BandColumn; label: string; names: readonly string[] }[] = [
+  { id: 'context', label: 'Контекст', names: ['контекст'] },
+  { id: 'memory', label: 'Память', names: ['память'] },
+  { id: 'limits', label: 'Лимиты', names: ['лимиты', 'подписка'] },
+  { id: 'speed', label: 'Скорость', names: ['скорость'] },
+  { id: 'cache', label: 'Кэш', names: ['кэш', 'кеш'] },
+]
+
+/** Колонка по слову из команды: `cache` или `кэш`, регистр не важен. */
+export const columnOf = (word: string): BandColumn | undefined => {
+  const name = word.trim().toLowerCase()
+
+  return COLUMNS.find(one => one.id === name || one.names.includes(name))?.id
+}
+
+const labelOf = (id: BandColumn) => COLUMNS.find(one => one.id === id)?.label ?? id
+
+const COLUMN_NAMES = 'контекст, память, лимиты, скорость, кэш'
+
+/** Ответ `/band` без аргументов: что видно, что скрыто и как переключить. */
+export const bandStatus = (off: readonly BandColumn[]) => {
+  const list = (ids: BandColumn[]) => (ids.length === 0 ? 'нет' : ids.map(labelOf).join(', '))
+  const ids = COLUMNS.map(one => one.id)
+
+  return (
+    `Полоса над вводом: видны — ${list(ids.filter(id => !off.includes(id)))}; скрыты — ${list(ids.filter(id => off.includes(id)))}. ` +
+    `Скрыть: /band hide <колонка>, вернуть: /band show <колонка> (${COLUMN_NAMES}).`
+  )
+}
 
 /** Сколько кэшу осталось: «4 мин», «1 ч». */
 export const formatCacheLeft = (ms: number) => {
@@ -108,11 +143,48 @@ export const register: Register = on => {
   // Скорость ответа модели: поток ответа → колонка «СКОРОСТЬ».
   watchSpeed(on)
 
-  // Таймер раз в минуту: обратный отсчёт до сброса лимитов.
+  // Таймер раз в минуту: обратный отсчёт до сброса лимитов. И команда `/band` со скрытыми колонками.
   on('session.start', async ($, e, next) => {
     $.clock.every(60_000, () => $.ui.invalidate('ui.render'))
+    // Имя занято другим плагином — команды не будет, но остальной старт сессии должен пройти.
+    await $.command
+      .register({
+        name: 'band',
+        description: 'Колонки полосы над вводом: `/band` — какие видны, `/band hide кэш` — скрыть, `/band show кэш` — вернуть',
+        argumentHint: '[hide|show <колонка>]',
+        immediate: true,
+      })
+      .catch(() => undefined)
+    const saved = await $.store.get(HIDDEN_KEY).catch(() => undefined)
+    const ids = Array.isArray(saved) ? COLUMNS.map(one => one.id).filter(id => saved.includes(id)) : []
+    await update($, hidden, () => ids)
 
     return next(e)
+  })
+
+  on('command.run', { command: 'band' }, async ($, e) => {
+    const [verb = '', ...words] = e.args.trim().toLowerCase().split(/\s+/)
+    if (verb === 'hide' || verb === 'show') {
+      const id = columnOf(words.join(' '))
+      if (!id) {
+        return { text: `Нет такой колонки: «${words.join(' ')}». Колонки: ${COLUMN_NAMES} (или context, memory, limits, speed, cache).` }
+      }
+      const off = await update($, hidden, ids => {
+        const rest = ids.filter(one => one !== id)
+
+        return verb === 'hide' ? [...rest, id] : rest
+      })
+      await $.store.set(HIDDEN_KEY, off).catch(() => undefined)
+
+      return {
+        text: verb === 'hide' ? `Колонка «${labelOf(id)}» скрыта. Вернуть: /band show ${id}` : `Колонка «${labelOf(id)}» снова на полосе.`,
+      }
+    }
+    if (verb !== '') {
+      return { text: `Не понял «${e.args.trim()}». ${bandStatus(await read($, hidden))}` }
+    }
+
+    return { text: bandStatus(await read($, hidden)) }
   })
 
   /**
@@ -176,10 +248,19 @@ export const register: Register = on => {
 
     const pace = await read($, speed)
     const warm = await read($, cache)
+    const off = await read($, hidden)
+    const isShown = (id: BandColumn) => !off.includes(id)
 
     // Ровные колонки, как карточки статистики: подпись сверху, значение снизу.
     // В ряд — сколько влезает (~20 клеток на колонку); не влезают все — ряды поровну, а не 5 + 1.
-    const count = 4 + Math.max(1, rateLimits.length)
+    // Скрытые `/band hide` не считаются; «лимиты» — столько колонок, сколько лимитов у подписки.
+    const count = COLUMNS.reduce(
+      (sum, one) => sum + (isShown(one.id) ? (one.id === 'limits' ? Math.max(1, rateLimits.length) : 1) : 0),
+      0,
+    )
+    if (count === 0) {
+      return next(e)
+    }
     const fit = Math.max(2, Math.floor(e.props.bodyColumns / 20))
     const perRow = count <= fit ? count : Math.ceil(count / Math.ceil(count / fit))
     const width = `${Math.floor(100 / perRow)}%`
@@ -228,39 +309,45 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column">
         <Box key="usage" flexDirection="row" flexWrap="wrap" rowGap={1}>
-          {column('context', 'КОНТЕКСТ', [
-            percentText(context.percent),
-            bar('context-bar', context.percent, `Контекст: ${context.percent ?? 0}%`),
-            <Text dimColor>
-              {context.tokens === undefined
-                ? 'после первого ответа'
-                : `${formatTokens(context.tokens)}/${formatTokens(context.window)}`}
-            </Text>,
-          ])}
-          {column(
-            'memory',
-            'ПАМЯТЬ',
-            memoryFiles.length === 0
-              ? [<Text dimColor>нет</Text>]
-              : [
-                  <Text>
-                    {memoryFiles.length} {plural(memoryFiles.length, 'файл', 'файла', 'файлов')}
-                  </Text>,
-                  <Text dimColor>~{formatTokens(memoryTokens)} ток.</Text>,
-                ],
-          )}
-          {rateLimits.length === 0
-            ? column('limits', 'ПОДПИСКА', [<Text dimColor>после первого ответа</Text>])
-            : rateLimits.map((limit: SessionRateLimit) => {
-                const left = formatLeft(limit.resetsAt, now)
+          {isShown('context')
+            ? column('context', 'КОНТЕКСТ', [
+                percentText(context.percent),
+                bar('context-bar', context.percent, `Контекст: ${context.percent ?? 0}%`),
+                <Text dimColor>
+                  {context.tokens === undefined
+                    ? 'после первого ответа'
+                    : `${formatTokens(context.tokens)}/${formatTokens(context.window)}`}
+                </Text>,
+              ])
+            : null}
+          {isShown('memory')
+            ? column(
+                'memory',
+                'ПАМЯТЬ',
+                memoryFiles.length === 0
+                  ? [<Text dimColor>нет</Text>]
+                  : [
+                      <Text>
+                        {memoryFiles.length} {plural(memoryFiles.length, 'файл', 'файла', 'файлов')}
+                      </Text>,
+                      <Text dimColor>~{formatTokens(memoryTokens)} ток.</Text>,
+                    ],
+              )
+            : null}
+          {!isShown('limits')
+            ? null
+            : rateLimits.length === 0
+              ? column('limits', 'ПОДПИСКА', [<Text dimColor>после первого ответа</Text>])
+              : rateLimits.map((limit: SessionRateLimit) => {
+                  const left = formatLeft(limit.resetsAt, now)
 
-                return column(`limit-${limit.kind}`, LIMIT_LABELS[limit.kind] ?? limit.kind.toUpperCase(), [
-                  percentText(limit.percentUsed),
-                  bar(`limit-${limit.kind}-bar`, limit.percentUsed, `${limit.kind}: ${limit.percentUsed}%`),
-                  left ? <Text dimColor>↻ {left}</Text> : null,
-                ])
-              })}
-          {column(
+                  return column(`limit-${limit.kind}`, LIMIT_LABELS[limit.kind] ?? limit.kind.toUpperCase(), [
+                    percentText(limit.percentUsed),
+                    bar(`limit-${limit.kind}-bar`, limit.percentUsed, `${limit.kind}: ${limit.percentUsed}%`),
+                    left ? <Text dimColor>↻ {left}</Text> : null,
+                  ])
+                })}
+          {isShown('speed') ? column(
             'speed',
             'СКОРОСТЬ',
             pace === null
@@ -285,8 +372,8 @@ export const register: Register = on => {
                   ) : null,
                   <Text dimColor>{pace.isLive ? 'идёт ответ' : `${formatCount(pace.tokens)} ток`}</Text>,
                 ],
-          )}
-          {column('cache', 'КЭШ', cacheValue())}
+          ) : null}
+          {isShown('cache') ? column('cache', 'КЭШ', cacheValue()) : null}
         </Box>
         {others}
       </Box>
